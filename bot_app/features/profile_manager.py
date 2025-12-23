@@ -120,7 +120,9 @@ class ProfileManager:
         return f"✅ Обновлено {updated} профилей."
 
     async def update_achievements(self, guild_name: str, days: int = 1):
-        content, error = await self._read_logs(guild_name, days=days)
+        # Limit context to avoid overload (25k chars is safe for most models)
+        limit = 25000 if days > 1 else 15000
+        content, error = await self._read_logs(guild_name, days=days, limit_chars=limit)
         if error: return f"⚠️ {error}"
         
         all_profiles = await self.db.get_all_profiles(self.guild_id)
