@@ -34,7 +34,12 @@ class AppDB:
             await conn.execute(sql.INIT_SCHEMA_USER_PROFILES)
             await conn.execute(sql.INIT_SCHEMA_PERSISTENT_STATE)
             
-            await conn.execute(sql.MIGRATION_ADD_FAVORITE)
+            # v4.0 New Schemas
+            await conn.execute(sql.INIT_SCHEMA_SOUNDPAD)
+            await conn.execute(sql.INIT_SCHEMA_REMINDERS)
+            await conn.execute(sql.INIT_SCHEMA_AFK)
+            
+            await conn.execute(sql.MIGRATION_V4)
             await conn.execute(sql.INIT_INDEXES)
 
     # ---- Config ----
@@ -230,3 +235,48 @@ class AppDB:
         
     async def get_all_user_phrases(self, guild_id: int, user_id: int, limit=50):
         return await self.pool.fetch(sql.GET_ALL_USER_PHRASES, guild_id, user_id, limit)
+
+    # ---- Soundpad ----
+    async def add_soundpad_sound(self, guild_id: int, user_id: int, name: str, path: str, duration: float):
+        return await self.pool.fetchval(sql.INSERT_SOUNDPAD, guild_id, user_id, name, path, time.time(), duration)
+
+    async def get_soundpad_sounds(self, guild_id: int):
+        return await self.pool.fetch(sql.GET_SOUNDPAD_SOUNDS, guild_id)
+
+    async def get_sound_by_name(self, guild_id: int, name: str):
+        return await self.pool.fetchrow(sql.GET_SOUNDPAD_SOUND_BY_NAME, guild_id, name)
+
+    # ---- Utilities (Reminders, AFK) ----
+    async def add_reminder(self, user_id: int, channel_id: int, due_ts: float, text: str):
+        return await self.pool.fetchval(sql.INSERT_REMINDER, user_id, channel_id, time.time(), due_ts, text)
+
+    async def get_pending_reminders(self, due_limit_ts: float):
+        return await self.pool.fetch(sql.GET_PENDING_REMINDERS, due_limit_ts)
+
+    async def complete_reminder(self, remind_id: int):
+        await self.pool.execute(sql.MARK_REMINDER_COMPLETED, remind_id)
+
+    async def set_afk(self, user_id: int, guild_id: int, message: str):
+        await self.pool.execute(sql.SET_AFK, user_id, guild_id, message, time.time())
+
+    async def get_afk(self, user_id: int):
+        return await self.pool.fetchrow(sql.GET_AFK, user_id)
+
+    async def remove_afk(self, user_id: int):
+        await self.pool.execute(sql.DELETE_AFK, user_id)
+
+    # ---- V4 Economy & Progression ----
+    async def claim_daily(self, guild_id: int, user_id: int, amount: int):
+        await self.pool.execute(sql.UPDATE_DAILY_CLAIM, guild_id, user_id, time.time(), amount)
+
+    async def add_free_plays(self, guild_id: int, user_id: int, amount: int):
+        await self.pool.execute(sql.ADD_FREE_PLAYS, guild_id, user_id, amount)
+
+    async def use_free_play(self, guild_id: int, user_id: int):
+        await self.pool.execute(sql.DECREMENT_FREE_PLAYS, guild_id, user_id)
+    
+    async def get_free_plays(self, guild_id: int, user_id: int) -> int:
+        return await self.pool.fetchval("SELECT free_phrase_plays FROM users WHERE guild_id=$1 AND user_id=$2", guild_id, user_id) or 0
+
+    async def reset_xp_keep_level(self, guild_id: int):
+        await self.pool.execute(sql.RESET_XP_KEEP_LEVEL, guild_id)

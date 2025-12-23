@@ -62,7 +62,13 @@ async def on_ready():
         "bot_app.cogs.general_commands",
         "bot_app.cogs.economy_commands",
         "bot_app.cogs.admin_commands",
-        "bot_app.cogs.events", # New Events Cog
+        "bot_app.cogs.events",
+        # New v4.0 Cogs
+        "bot_app.cogs.debug",
+        "bot_app.cogs.utilities",
+        "bot_app.cogs.soundpad",
+        "bot_app.cogs.user_interaction",
+        "bot_app.cogs.progression",
     ]
 
     for ext in initial_extensions:

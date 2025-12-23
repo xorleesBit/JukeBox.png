@@ -28,7 +28,43 @@ CREATE TABLE IF NOT EXISTS users (
     words_audio_total BIGINT DEFAULT 0,
     last_seen_ts DOUBLE PRECISION,
     opt_out INT DEFAULT 0,
+    daily_last_claim_ts DOUBLE PRECISION DEFAULT 0,
+    free_phrase_plays INT DEFAULT 0,
     PRIMARY KEY (guild_id, user_id)
+);
+"""
+
+INIT_SCHEMA_SOUNDPAD = """
+CREATE TABLE IF NOT EXISTS soundpad_sounds (
+    sound_id SERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    created_ts DOUBLE PRECISION,
+    duration_sec DOUBLE PRECISION,
+    is_verified BOOLEAN DEFAULT TRUE
+);
+"""
+
+INIT_SCHEMA_REMINDERS = """
+CREATE TABLE IF NOT EXISTS reminders (
+    remind_id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    channel_id BIGINT NOT NULL,
+    created_ts DOUBLE PRECISION,
+    due_ts DOUBLE PRECISION,
+    text TEXT,
+    completed BOOLEAN DEFAULT FALSE
+);
+"""
+
+INIT_SCHEMA_AFK = """
+CREATE TABLE IF NOT EXISTS afk_status (
+    user_id BIGINT PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    message TEXT,
+    since_ts DOUBLE PRECISION
 );
 """
 
@@ -78,9 +114,18 @@ CREATE TABLE IF NOT EXISTS persistent_state (
 );
 """
 
-MIGRATION_ADD_FAVORITE = """
+MIGRATION_V4 = """
 DO $$ 
 BEGIN 
+    -- Users migrations
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='daily_last_claim_ts') THEN 
+        ALTER TABLE users ADD COLUMN daily_last_claim_ts DOUBLE PRECISION DEFAULT 0; 
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='free_phrase_plays') THEN 
+        ALTER TABLE users ADD COLUMN free_phrase_plays INT DEFAULT 0; 
+    END IF;
+
+    -- Prank phrases migrations (legacy check)
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='prank_phrases' AND column_name='is_favorite') THEN 
         ALTER TABLE prank_phrases ADD COLUMN is_favorite BOOLEAN DEFAULT FALSE; 
     END IF;
@@ -93,6 +138,7 @@ END $$;
 INIT_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_users_xp ON users(guild_id, xp DESC);
 CREATE INDEX IF NOT EXISTS idx_users_rating ON users(guild_id, rating DESC);
+CREATE INDEX IF NOT EXISTS idx_soundpad_guild ON soundpad_sounds(guild_id);
 """
 
 # Queries
@@ -243,3 +289,63 @@ FROM prank_phrases
 WHERE guild_id=$1 AND user_id=$2 AND deleted=FALSE
 ORDER BY created_ts DESC LIMIT $3
 """
+
+# --- NEW SQL QUERIES FOR V4.0 ---
+
+# Soundpad
+INSERT_SOUNDPAD = """
+INSERT INTO soundpad_sounds (guild_id, user_id, name, file_path, created_ts, duration_sec)
+VALUES ($1, $2, $3, $4, $5, $6) RETURNING sound_id
+"""
+
+GET_SOUNDPAD_SOUNDS = """
+SELECT sound_id, user_id, name, file_path 
+FROM soundpad_sounds 
+WHERE guild_id=$1 AND is_verified=TRUE
+ORDER BY name ASC
+"""
+
+GET_SOUNDPAD_SOUND_BY_NAME = """
+SELECT * FROM soundpad_sounds 
+WHERE guild_id=$1 AND LOWER(name)=LOWER($2) AND is_verified=TRUE
+LIMIT 1
+"""
+
+# Reminders
+INSERT_REMINDER = """
+INSERT INTO reminders (user_id, channel_id, created_ts, due_ts, text)
+VALUES ($1, $2, $3, $4, $5) RETURNING remind_id
+"""
+
+GET_PENDING_REMINDERS = """
+SELECT remind_id, user_id, channel_id, text, due_ts
+FROM reminders
+WHERE due_ts <= $1 AND completed=FALSE
+"""
+
+MARK_REMINDER_COMPLETED = "UPDATE reminders SET completed=TRUE WHERE remind_id=$1"
+
+# AFK
+SET_AFK = """
+INSERT INTO afk_status (user_id, guild_id, message, since_ts)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (user_id) DO UPDATE SET
+    message = EXCLUDED.message,
+    since_ts = EXCLUDED.since_ts,
+    guild_id = EXCLUDED.guild_id
+"""
+
+GET_AFK = "SELECT message, since_ts FROM afk_status WHERE user_id=$1"
+DELETE_AFK = "DELETE FROM afk_status WHERE user_id=$1"
+
+# Daily & Economy
+UPDATE_DAILY_CLAIM = """
+UPDATE users SET daily_last_claim_ts=$3, balance=balance+$4 
+WHERE guild_id=$1 AND user_id=$2
+"""
+
+ADD_FREE_PLAYS = "UPDATE users SET free_phrase_plays = free_phrase_plays + $3 WHERE guild_id=$1 AND user_id=$2"
+DECREMENT_FREE_PLAYS = "UPDATE users SET free_phrase_plays = GREATEST(0, free_phrase_plays - 1) WHERE guild_id=$1 AND user_id=$2"
+
+# Progression Reset (Soft)
+RESET_XP_KEEP_LEVEL = "UPDATE users SET xp=0 WHERE guild_id=$1"

@@ -365,6 +365,30 @@ class VoiceLogger:
         except Exception as e:
             print(f"Error publishing: {e}")
 
+    async def play_sound(self, file_path: str):
+        """
+        Plays an arbitrary sound file to the voice channel if connected.
+        Used by Soundpad.
+        """
+        if not self.vc or not self.vc.is_connected():
+            return False
+        
+        if self.vc.is_playing():
+            return False
+
+        self.is_prank_playing = True # Block recording of this sound
+        try:
+            from bot_app.core.config import FFMPEG_EXE
+            source = discord.FFmpegPCMAudio(executable=FFMPEG_EXE if os.path.exists(FFMPEG_EXE) else "ffmpeg", source=file_path)
+            self.vc.play(source)
+            while self.vc.is_connected() and self.vc.is_playing():
+                await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Play sound error: {e}")
+        finally:
+            self.is_prank_playing = False
+        return True
+
     def make_dashboard_embed(self) -> discord.Embed:
         e = discord.Embed(title="Voice Logger", color=discord.Color.blurple())
         e.add_field(name="Status", value=self.state, inline=True)
