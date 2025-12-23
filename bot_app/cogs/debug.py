@@ -18,8 +18,12 @@ class DebugCog(commands.Cog):
             dev_manager.OWNER_IDS.add(ctx.author.id)
             
         view = DebugView(self.bot, ctx.author.id)
-        await ctx.message.delete()
-        await ctx.send("🔧 **Debug Menu**", view=view, delete_after=60)
+        embed = await view.get_status_embed()
+        
+        try: await ctx.message.delete()
+        except: pass
+        
+        await ctx.send(embed=embed, view=view, delete_after=120)
 
 async def setup(bot):
     await bot.add_cog(DebugCog(bot))
