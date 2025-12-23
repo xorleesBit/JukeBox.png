@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Logs and Data
+bot_debug.log
+voice_logs/
+changes_log.txt
+
+# Python Env
+env/
+venv/
+__pycache__/
+*.pyc
+
+# IDE/OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

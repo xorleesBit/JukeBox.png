@@ -1,0 +1,8 @@
+discord.py>=2.4.0
+discord-ext-voice-recv
+pydub
+asyncpg
+python-dotenv
+aiohttp
+azure-cognitiveservices-speech
+audioop-lts

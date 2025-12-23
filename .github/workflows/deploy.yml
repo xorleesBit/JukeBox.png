@@ -1,0 +1,44 @@
+name: Deploy LogerBot
+
+on:
+  push:
+    branches: [ "main", "master" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Copy files via SCP
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT }}
+          source: "."
+          target: "/home/linux_dist"
+          rm: false # НЕ удалять файлы на сервере (сохраняет логи и .env)
+
+      - name: Restart Docker
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT }}
+          script: |
+            cd /home/linux_dist
+            # Проверка наличия .env (на всякий случай)
+            if [ ! -f .env ]; then
+              echo "WARNING: .env file missing!"
+            fi
+            
+            # Пересборка и запуск
+            docker compose down
+            docker compose up -d --build
+            
+            # Очистка мусора (старые образы)
+            docker image prune -f

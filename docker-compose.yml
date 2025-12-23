@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: logerbot_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "80013002"
+      POSTGRES_DB: logerbot_db
+    ports:
+      # В формате "ВНЕШНИЙ_ПОРТ:ВНУТРЕННИЙ_ПОРТ"
+      # Если порт 5432 занят другим контейнером, используем 5433
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  bot:
+    build: .
+    container_name: logerbot_app
+    restart: always
+    depends_on:
+      - db
+    environment:
+      # Подключение к базе внутри сети Docker (используем имя сервиса 'db' и порт 5432)
+      - DATABASE_URL=postgresql://postgres:80013002@db:5432/logerbot_db
+    env_file:
+      - .env
+    volumes:
+      # Пробрасываем папки для сохранения голоса и логов
+      - ./voice_logs:/app/voice_logs
+      - ./bot_debug.log:/app/bot_debug.log
+      # ПРОБРОС КОДА (Позволяет обновлять код без пересборки образа)
+      - ./bot_app:/app/bot_app
+      - ./start.py:/app/start.py
+
+volumes:
+  postgres_data:
