@@ -183,9 +183,9 @@ class AchieveModal(discord.ui.Modal):
         self.db = db; self.guild_id = guild_id; self.user_id = user_id; self.index = index
         self.existing = existing_data
 
-        self.a_title = discord.ui.TextInput(label="Название", required=True, default=existing_data['title'] if existing_data else "")
-        self.a_desc = discord.ui.TextInput(label="Описание", required=True, style=discord.TextStyle.paragraph, default=existing_data['desc'] if existing_data else "")
-        self.a_date = discord.ui.TextInput(label="Дата (YYYY-MM-DD)", required=True, default=existing_data['date'] if existing_data else str(datetime.date.today()))
+        self.a_title = discord.ui.TextInput(label="Название", required=True, default=(existing_data['title'] if existing_data else "")[:45])
+        self.a_desc = discord.ui.TextInput(label="Описание", required=True, style=discord.TextStyle.paragraph, default=(existing_data['desc'] if existing_data else "")[:3900])
+        self.a_date = discord.ui.TextInput(label="Дата (YYYY-MM-DD)", required=True, default=(existing_data['date'] if existing_data else str(datetime.date.today()))[:20])
         
         self.add_item(self.a_title)
         self.add_item(self.a_desc)

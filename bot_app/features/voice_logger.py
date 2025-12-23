@@ -282,10 +282,12 @@ class VoiceLogger:
             
             # Ignore self (Bot)
             if final_uid == self.bot.user.id:
+                if hasattr(pcm, "close"): pcm.close()
                 continue
 
             if isinstance(final_uid, int):
                 if await self.db.is_user_opt_out(self.guild_id, final_uid):
+                    if hasattr(pcm, "close"): pcm.close()
                     continue
             
             filtered_data[final_uid] = pcm

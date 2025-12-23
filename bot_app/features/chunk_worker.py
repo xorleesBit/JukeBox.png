@@ -49,10 +49,12 @@ class ChunkProcessor:
         
         # Pre-download VAD model
         try:
+            import asyncio
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 loop.create_task(vad._ensure_model())
-        except: pass # Will try later if loop not ready
+        except Exception: 
+            pass
         
         logger.info("ChunkProcessor initialized.")
 
@@ -83,7 +85,6 @@ class ChunkProcessor:
 
     def enqueue(self, job: ChunkJob):
         self.q.put(job)
-        # logger.debug(f"ChunkJob enqueued. QSize: {self.q.qsize()}")
 
     def queue_size(self) -> int:
         return self.q.qsize()
@@ -121,6 +122,10 @@ class ChunkProcessor:
 
     def _process(self, job: ChunkJob):
         logger.info(f"Processing chunk: {len(job.data)} users, duration={job.chunk_end - job.chunk_start:.1f}s")
+        if not job.base_dir:
+            # Should not happen unless dummy stop job
+            return
+
         os.makedirs(job.base_dir, exist_ok=True)
         store = self._get_store(job.base_dir)
 
@@ -139,8 +144,23 @@ class ChunkProcessor:
             return transcribe_file_azure_sentences(wav_path, job.chunk_start, user_name, duration_sec)
 
         with ThreadPoolExecutor(max_workers=max(1, TRANSCRIBE_WORKERS)) as pool:
-            for user_id, packets in job.data.items():
+            for user_id, packets_or_buffer in job.data.items():
                 user_name = job.user_map.get(user_id, f"User_{user_id}") if user_id != "Unknown" else "Unknown"
+
+                # Handle DiskPacketBuffer
+                if hasattr(packets_or_buffer, "read_all"):
+                    try:
+                        packets = packets_or_buffer.read_all()
+                    except Exception as e:
+                        logger.error(f"Failed to read packet buffer for {user_name}: {e}")
+                        packets = []
+                    finally:
+                        try:
+                            packets_or_buffer.close()
+                        except Exception:
+                            pass
+                else:
+                    packets = packets_or_buffer
 
                 track = reconstruct_user_audio(packets, job.chunk_start, job.chunk_end)
                 if len(track) > duration_ms:
@@ -150,23 +170,26 @@ class ChunkProcessor:
 
                 # VAD CHECK
                 if not vad.validate(track):
-                    logger.info(f"VAD: Silence detected for {user_name}. Skipping STT.")
+                    # logger.info(f"VAD: Silence detected for {user_name}. Skipping STT.")
                     continue
 
                 tmp = os.path.join(job.base_dir, f"_tmp_{int(job.chunk_start)}_{user_id}.wav")
-                track.export(tmp, format="wav")
-                temp_files.append(tmp)
+                try:
+                    track.export(tmp, format="wav")
+                    temp_files.append(tmp)
 
-                fut = pool.submit(transcribe_one, tmp, user_name)
-                futures.append(fut)
-                fut_meta[fut] = (user_id, user_name)
+                    fut = pool.submit(transcribe_one, tmp, user_name)
+                    futures.append(fut)
+                    fut_meta[fut] = (user_id, user_name)
+                except Exception as e:
+                    logger.error(f"Failed to export/submit audio for {user_name}: {e}")
 
             for fut in as_completed(futures):
                 user_id, user_name = fut_meta.get(fut, ("Unknown", "Unknown"))
                 try:
                     sentences = fut.result()  # list[(abs_ts, "User: text")]
-                    if sentences:
-                        logger.info(f"Got {len(sentences)} sentences for {user_name}")
+                    # if sentences:
+                    #    logger.info(f"Got {len(sentences)} sentences for {user_name}")
                     for abs_ts, line in sentences:
                         store.append_event(abs_ts, "🗣️", line)
 
@@ -212,5 +235,3 @@ class ChunkProcessor:
                 self.on_after_chunk()
             except Exception:
                 pass
-        
-        logger.info(f"Chunk done. QSize: {self.q.qsize()}")
