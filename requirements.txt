@@ -8,3 +8,4 @@ azure-cognitiveservices-speech
 audioop-lts
 onnxruntime
 numpy
+psutil

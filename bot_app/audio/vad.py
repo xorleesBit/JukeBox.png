@@ -8,7 +8,7 @@ import asyncio
 logger = logging.getLogger(__name__)
 
 # Ссылка на стабильную версию модели (v4)
-MODEL_URL = "https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx"
+MODEL_URL = "https://github.com/snakers4/silero-vad/raw/v4.0.0/files/silero_vad.onnx"
 MODEL_PATH = "silero_vad.onnx"
 
 class VADValidator:
