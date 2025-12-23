@@ -37,8 +37,7 @@ class ProfileManager:
                         if "Sink received" not in content: # Quick check if it's raw
                              # Simple cleanup
                              lines = [l.strip() for l in content.splitlines() if l.strip() and "Sink received" not in l]
-                             collected.append(f"--- ДАТА: {date_str} ---
-" + "\n".join(lines[-1000:])) # Take last 1000 lines
+                             collected.append(f"--- ДАТА: {date_str} ---\n" + "\n".join(lines[-1000:])) # Take last 1000 lines
                 except Exception: pass
         
         if not found:
