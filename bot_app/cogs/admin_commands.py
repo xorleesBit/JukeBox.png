@@ -80,14 +80,7 @@ class AdminCommands(commands.Cog):
         else:
             await ctx.send("Логгер выключен.", delete_after=5)
 
-    @commands.command(name="debug")
-    @commands.has_permissions(administrator=True)
-    async def cmd_debug(self, ctx):
-        l = self.loggers.get(ctx.guild.id)
-        msg = f"**Debug**\nGuild: {ctx.guild.id}\nLogger: {'ACTIVE' if l else 'NONE'}\n"
-        if l:
-            msg += f"Rec: {l.is_recording}\nPrank: {'OK' if l.prank else 'NO'}\n"
-        await ctx.send(msg, delete_after=20)
+
 
     @commands.command(name="migrate_logs_msc")
     @commands.has_permissions(administrator=True)
