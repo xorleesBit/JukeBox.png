@@ -38,6 +38,8 @@ class AppDB:
             await conn.execute(sql.INIT_SCHEMA_SOUNDPAD)
             await conn.execute(sql.INIT_SCHEMA_REMINDERS)
             await conn.execute(sql.INIT_SCHEMA_AFK)
+            await conn.execute(sql.INIT_SCHEMA_INVENTORY)
+            await conn.execute(sql.INIT_SCHEMA_BUFFS)
             
             await conn.execute(sql.MIGRATION_V4)
             await conn.execute(sql.INIT_INDEXES)
@@ -268,6 +270,32 @@ class AppDB:
 
     async def remove_afk(self, user_id: int):
         await self.pool.execute(sql.DELETE_AFK, user_id)
+
+    # ---- Inventory & Buffs ----
+    async def add_item(self, guild_id: int, user_id: int, item_id: str, count: int = 1):
+        await self.pool.execute(sql.ADD_ITEM, guild_id, user_id, item_id, count)
+
+    async def remove_item(self, guild_id: int, user_id: int, item_id: str, count: int = 1) -> bool:
+        """Returns True if successful, False if not enough items."""
+        val = await self.pool.fetchval(sql.REMOVE_ITEM, guild_id, user_id, item_id, count)
+        return val is not None
+
+    async def get_inventory(self, guild_id: int, user_id: int):
+        return await self.pool.fetch(sql.GET_INVENTORY, guild_id, user_id)
+
+    async def add_buff(self, guild_id: int, user_id: int, buff_id: str, expires_at: float, value: float = 1.0):
+        # We need to fetch existing first to stack duration properly?
+        # Or we do logic in Python. Let's do UPSERT logic:
+        # If exists: New Expire = Old Expire + Duration? 
+        # No, SQL UPSERT in sql.py sets to MAX(new, old) currently.
+        # Let's handle stacking in Python before calling this.
+        await self.pool.execute(sql.UPSERT_BUFF, guild_id, user_id, buff_id, expires_at, value)
+
+    async def get_active_buffs(self, guild_id: int, user_id: int):
+        return await self.pool.fetch(sql.GET_ACTIVE_BUFFS, guild_id, user_id, time.time())
+
+    async def get_buff(self, guild_id: int, user_id: int, buff_id: str):
+        return await self.pool.fetchrow(sql.GET_SPECIFIC_BUFF, guild_id, user_id, buff_id, time.time())
 
     # ---- V4 Economy & Progression ----
     async def claim_daily(self, guild_id: int, user_id: int, amount: int):

@@ -141,6 +141,58 @@ CREATE INDEX IF NOT EXISTS idx_users_rating ON users(guild_id, rating DESC);
 CREATE INDEX IF NOT EXISTS idx_soundpad_guild ON soundpad_sounds(guild_id);
 """
 
+INIT_SCHEMA_INVENTORY = """
+CREATE TABLE IF NOT EXISTS user_inventory (
+    guild_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    item_id TEXT NOT NULL,
+    count INT DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id, item_id)
+);
+"""
+
+INIT_SCHEMA_BUFFS = """
+CREATE TABLE IF NOT EXISTS active_buffs (
+    guild_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    buff_id TEXT NOT NULL,
+    expires_at DOUBLE PRECISION NOT NULL,
+    value DOUBLE PRECISION DEFAULT 1.0,
+    PRIMARY KEY (guild_id, user_id, buff_id)
+);
+"""
+
+# ... (Existing migration query) ...
+
+# --- INVENTORY & BUFFS QUERIES ---
+ADD_ITEM = """
+INSERT INTO user_inventory (guild_id, user_id, item_id, count)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (guild_id, user_id, item_id) DO UPDATE SET count = user_inventory.count + $4
+"""
+
+REMOVE_ITEM = """
+UPDATE user_inventory SET count = count - $4 
+WHERE guild_id=$1 AND user_id=$2 AND item_id=$3 AND count >= $4
+RETURNING count
+"""
+
+GET_INVENTORY = "SELECT item_id, count FROM user_inventory WHERE guild_id=$1 AND user_id=$2 AND count > 0"
+
+UPSERT_BUFF = """
+INSERT INTO active_buffs (guild_id, user_id, buff_id, expires_at, value)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (guild_id, user_id, buff_id) DO UPDATE SET 
+    expires_at = GREATEST(active_buffs.expires_at, $4),
+    value = $5
+"""
+# Note: Logic above replaces expiration with new one if further, but usually we want ADDitive duration.
+# We will handle date calculation in Python and just set the new absolute date here.
+
+GET_ACTIVE_BUFFS = "SELECT buff_id, expires_at, value FROM active_buffs WHERE guild_id=$1 AND user_id=$2 AND expires_at > $3"
+GET_SPECIFIC_BUFF = "SELECT expires_at, value FROM active_buffs WHERE guild_id=$1 AND user_id=$2 AND buff_id=$3 AND expires_at > $4"
+CLEANUP_BUFFS = "DELETE FROM active_buffs WHERE expires_at < $1"
+
 # Queries
 GET_CONFIG = "SELECT settings FROM guild_configs WHERE guild_id=$1"
 

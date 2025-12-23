@@ -71,6 +71,7 @@ async def on_ready():
         "bot_app.cogs.progression",
         "bot_app.cogs.fun",
         "bot_app.cogs.ai_fun",
+        "bot_app.cogs.shop",
     ]
 
     for ext in initial_extensions:

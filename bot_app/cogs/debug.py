@@ -13,23 +13,26 @@ class DebugCog(commands.Cog):
 
     @commands.command(name="debug", hidden=True)
     async def debug_cmd(self, ctx):
-        print(f"[DEBUG_CMD] Triggered by {ctx.author.id}. Owner IDs: {dev_manager.OWNER_IDS}")
-        
-        # Add owner if not present (auto-detect first user)
+        # 1. Check Owner
         if ctx.author.id not in dev_manager.OWNER_IDS:
-            print(f"[DEBUG_CMD] User {ctx.author.id} is NOT in OWNER_IDS. Auto-adding...")
             dev_manager.OWNER_IDS.add(ctx.author.id)
+
+        # 2. Enforce DM
+        if not isinstance(ctx.channel, discord.DMChannel):
+            try: await ctx.message.delete()
+            except: pass
+            try:
+                await ctx.author.send("🔒 **Debug Menu** доступно только в Личных Сообщениях.")
+            except: pass
+            return
+
+        print(f"[DEBUG_CMD] Triggered in DM by {ctx.author.id}")
             
         try:
             view = DebugView(self.bot, ctx.author.id)
             embed = await view.get_status_embed()
             
-            # Try to delete user message
-            try: await ctx.message.delete()
-            except Exception as e: print(f"[DEBUG_CMD] Delete msg fail: {e}")
-            
-            await ctx.send(embed=embed, view=view, delete_after=120)
-            print("[DEBUG_CMD] Menu sent successfully.")
+            await ctx.send(embed=embed, view=view)
         except Exception as e:
             print(f"[DEBUG_CMD] CRITICAL ERROR: {e}")
             import traceback

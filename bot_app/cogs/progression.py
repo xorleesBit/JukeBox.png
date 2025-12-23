@@ -39,6 +39,12 @@ class ProgressionCog(commands.Cog):
                         if dev_manager.is_god_mode(m.id):
                             amount *= 2 # Bonus for testing
                         
+                        # BUFF CHECK: XP Boost
+                        if hasattr(self.bot, 'buff_manager'):
+                            mult = await self.bot.buff_manager.get_buff_value(guild.id, m.id, "xp_boost", default=1.0)
+                            if mult > 1.0:
+                                amount = int(amount * mult)
+                        
                         await self.bot.db.add_xp_and_words(guild.id, m.id, amount, 0, 0)
 
     # --- Rating Logic (Placeholder for "Real Metrics") ---

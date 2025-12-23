@@ -35,6 +35,12 @@ class EconomyCommands(commands.Cog):
 
         config = await self.db.get_config(ctx.guild.id)
         amount = config.get("daily_amount", 100)
+        
+        # BUFF CHECK: Daily Boost
+        if hasattr(self.bot, 'buff_manager'):
+            mult = await self.bot.buff_manager.get_buff_value(ctx.guild.id, ctx.author.id, "daily_boost", default=1.0)
+            if mult > 1.0:
+                amount = int(amount * mult)
 
         await self.db.claim_daily(ctx.guild.id, ctx.author.id, amount)
         await ctx.send(embed=discord.Embed(

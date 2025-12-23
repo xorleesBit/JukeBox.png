@@ -37,6 +37,13 @@ class SoundpadCog(commands.Cog):
         price = config.get("soundpad_price", 500)
         
         bypass = dev_manager.is_god_mode(ctx.author.id)
+        
+        # BUFF CHECK: Sound Pass
+        if hasattr(self.bot, 'buff_manager'):
+            has_pass = await self.bot.buff_manager.has_buff(ctx.guild.id, ctx.author.id, "sound_free")
+            if has_pass:
+                bypass = True
+
         if not bypass:
             bal = await self.bot.db.get_balance(ctx.guild.id, ctx.author.id)
             if bal < price:

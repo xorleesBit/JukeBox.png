@@ -27,6 +27,13 @@ class AIFunCog(commands.Cog):
             if bal < cost:
                 return await ctx.send(f"❌ Нужно {cost} монет. У вас {bal}.")
 
+        # BUFF CHECK: Anti-Roast
+        if hasattr(self.bot, 'buff_manager'):
+            has_shield = await self.bot.buff_manager.has_buff(ctx.guild.id, target.id, "anti_roast")
+            if has_shield:
+                await ctx.send(f"🛡️ **{target.display_name}** защищен Зеркалом! Прожарка отражается на вас! 😈")
+                target = ctx.author # Reflect
+
         msg = await ctx.send(f"🤖 Собираю компромат на {target.display_name}...")
         
         # 1. Collect Logs

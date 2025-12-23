@@ -289,6 +289,13 @@ class VoiceLogger:
                 if await self.db.is_user_opt_out(self.guild_id, final_uid):
                     if hasattr(pcm, "close"): pcm.close()
                     continue
+                
+                # BUFF CHECK: Ghost Mode
+                if hasattr(self.bot, 'buff_manager'):
+                    is_ghost = await self.bot.buff_manager.has_buff(self.guild_id, final_uid, "ghost_mode")
+                    if is_ghost:
+                        if hasattr(pcm, "close"): pcm.close()
+                        continue
             
             filtered_data[final_uid] = pcm
         
