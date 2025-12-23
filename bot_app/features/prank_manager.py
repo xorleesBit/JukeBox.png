@@ -232,9 +232,16 @@ class PrankManager:
             phrase_data = await self.db.get_phrase(pid)
             if phrase_data:
                 author_id = phrase_data['user_id']
+                
+                # 1. Opt-out check
+                if await self.db.is_user_opt_out(self.guild_id, author_id):
+                    logger.info(f"Skipping phrase {pid}: user {author_id} is opted out.")
+                    continue
+
+                # 2. Speaking check
                 if self.is_user_speaking(author_id):
-                    logger.info(f"Skipping phrase {pid} because author {author_id} is speaking.")
-                    continue # Try next
+                    logger.info(f"Skipping phrase {pid}: user {author_id} is speaking.")
+                    continue 
             
             # Found good phrase
             logger.info(f"Playing random phrase: {pid}")
@@ -256,6 +263,10 @@ class PrankManager:
 
         phrase = await self.db.get_phrase(phrase_id)
         if not phrase:
+            return
+
+        # Opt-out safety check
+        if await self.db.is_user_opt_out(self.guild_id, phrase['user_id']):
             return
 
         mp3_path = phrase["mp3_path"]
