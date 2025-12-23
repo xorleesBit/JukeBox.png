@@ -6,3 +6,5 @@ python-dotenv
 aiohttp
 azure-cognitiveservices-speech
 audioop-lts
+onnxruntime
+numpy

@@ -13,6 +13,7 @@ from bot_app.core.config import TRANSCRIBE_WORKERS
 from bot_app.audio.audio_utils import reconstruct_user_audio
 from bot_app.integrations.azure_stt import transcribe_file_azure_sentences
 from bot_app.core.log_store import LogStore
+from bot_app.audio.vad import vad
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,13 @@ class ChunkProcessor:
 
         self._log_store_cache: dict[str, LogStore] = {}
         self._cache_lock = threading.Lock()
+        
+        # Pre-download VAD model
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(vad._ensure_model())
+        except: pass # Will try later if loop not ready
         
         logger.info("ChunkProcessor initialized.")
 
@@ -139,6 +147,11 @@ class ChunkProcessor:
                     track = track[:duration_ms]
 
                 full_mix = full_mix.overlay(track)
+
+                # VAD CHECK
+                if not vad.validate(track):
+                    logger.info(f"VAD: Silence detected for {user_name}. Skipping STT.")
+                    continue
 
                 tmp = os.path.join(job.base_dir, f"_tmp_{int(job.chunk_start)}_{user_id}.wav")
                 track.export(tmp, format="wav")
