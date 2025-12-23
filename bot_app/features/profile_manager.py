@@ -14,23 +14,41 @@ class ProfileManager:
         self.db = db
         self.guild_id = int(guild_id)
 
-    async def _read_logs(self, guild_name: str, limit_chars=30000):
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
+    async def _read_logs(self, guild_name: str, days: int = 1, limit_chars=40000):
         def safe_dirname(name: str) -> str:
             keep = set(" abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ")
             return "".join(c if c in keep else "_" for c in (name or "guild")).strip() or "guild"
+
+        collected = []
+        found = False
         
-        log_path = os.path.join(LOG_DIR, today, safe_dirname(guild_name), f"{today}.log")
-        if not os.path.exists(log_path): return None, "Лог файл не найден."
+        dates = [datetime.datetime.now() - datetime.timedelta(days=i) for i in range(days-1, -1, -1)]
         
-        try:
-            with open(log_path, "r", encoding="utf-8-sig") as f:
-                content = f.read()
-                if len(content) > limit_chars:
-                    return content[-limit_chars:], None
-                return content, None
-        except Exception as e:
-            return None, str(e)
+        for dt in dates:
+            date_str = dt.strftime("%Y-%m-%d")
+            log_path = os.path.join(LOG_DIR, date_str, safe_dirname(guild_name), f"{date_str}.log")
+            
+            if os.path.exists(log_path):
+                found = True
+                try:
+                    with open(log_path, "r", encoding="utf-8-sig") as f:
+                        # Read entire file, but optimize
+                        content = f.read()
+                        if "Sink received" not in content: # Quick check if it's raw
+                             # Simple cleanup
+                             lines = [l.strip() for l in content.splitlines() if l.strip() and "Sink received" not in l]
+                             collected.append(f"--- ДАТА: {date_str} ---
+" + "\n".join(lines[-1000:])) # Take last 1000 lines
+                except Exception: pass
+        
+        if not found:
+            return None, "Логи не найдены."
+            
+        full = "\n".join(collected)
+        if len(full) > limit_chars:
+            full = full[-limit_chars:]
+            
+        return full, None
 
     def _extract_json(self, text: str) -> str:
         text = text.strip()
@@ -57,7 +75,9 @@ class ProfileManager:
         return text
 
     async def run_analysis(self, guild_name: str):
-        content, error = await self._read_logs(guild_name)
+        # Always analyze just 1 day for profiles to keep it fast, 
+        # unless we want "deep analysis" (maybe later)
+        content, error = await self._read_logs(guild_name, days=1, limit_chars=20000)
         if error: return f"⚠️ {error}"
         
         db_users = await self.db.get_all_profiles(self.guild_id)
@@ -77,7 +97,7 @@ class ProfileManager:
             Ты - AI Аналитик.
             ПОЛЬЗОВАТЕЛЬ: {name} (ID: {uid})
             
-            ВЕРНИ JSON ПРОФИЛЯ для этого юзера на основе логов:
+            ВЕРНИ JSON ПРОФИЛЯ:
             {{
                 "interests": [],
                 "favorite_phrases": [],
@@ -85,16 +105,13 @@ class ProfileManager:
                 "relations": {{}},
                 "personality": "..."
             }}
-            Оставь старое если нет нового. Текущие данные: {json.dumps(current, ensure_ascii=False)}
+            Оставь старое если нет нового. Текущие: {json.dumps(current, ensure_ascii=False)}
             """
             
             try:
                 resp = await ask_ai(prompt)
                 data = json.loads(self._extract_json(resp))
-                
-                if 'achievements' in current:
-                    data['achievements'] = current['achievements']
-                
+                if 'achievements' in current: data['achievements'] = current['achievements']
                 await self.db.upsert_profile(self.guild_id, uid, data)
                 updated += 1
                 await asyncio.sleep(2)
@@ -103,89 +120,75 @@ class ProfileManager:
 
         return f"✅ Обновлено {updated} профилей."
 
-    async def update_achievements(self, guild_name: str):
-        content, error = await self._read_logs(guild_name)
+    async def update_achievements(self, guild_name: str, days: int = 1):
+        content, error = await self._read_logs(guild_name, days=days)
         if error: return f"⚠️ {error}"
         
-        # 1. Identify active users to provide context
-        # We fetch all profiles to get existing achievements
         all_profiles = await self.db.get_all_profiles(self.guild_id)
-        
         users_context = []
         for p in all_profiles:
             uid = p['user_id']
-            name = p['display_name']
-            
-            # Optimization: Only include if mentioned in logs
-            if name in content or str(uid) in content:
-                profile_data = await self.db.get_profile(self.guild_id, uid)
-                existing_achs = profile_data.get('achievements', [])
-                titles = [a.get('title') for a in existing_achs]
-                users_context.append(f"User {name} (ID: {uid}) уже имеет: {titles}")
+            if p['display_name'] in content or str(uid) in content:
+                existing = (await self.db.get_profile(self.guild_id, uid)).get('achievements', [])
+                titles = [a.get('title') for a in existing]
+                users_context.append(f"User {p['display_name']} (ID: {uid}): {titles}")
 
-        context_str = "\n".join(users_context[:20]) # Limit context size
+        context_str = "\n".join(users_context[:30])
+        period = "сегодня" if days == 1 else f"последние {days} дней"
         
         prompt = f"""
-        Проанализируй этот лог и выдай НОВЫЕ ачивки (JSON):
+        Проанализируй логи за {period} и выдай НОВЫЕ ачивки (JSON):
         --- ЛОГ ---
-        {content[:20000]}
+        {content}
         --- КОНЕЦ ---
         
-        СУЩЕСТВУЮЩИЕ АЧИВКИ (НЕ ПОВТОРЯЙ ИХ):
+        СУЩЕСТВУЮЩИЕ АЧИВКИ (НЕ ДУБЛИРУЙ):
         {context_str}
         
         ЗАДАЧА:
-        Верни JSON список НОВЫХ ачивок для пользователей, которые отличились ИМЕННО СЕГОДНЯ.
+        Верни JSON список НОВЫХ ачивок.
         
         ТРЕБОВАНИЯ:
         1. Язык: РУССКИЙ.
-        2. Формат: СТРОГО JSON (без лишних слов).
-        3. Не дублируй банальные вещи ("Зашел в канал"), ищи уникальное.
+        2. Формат: СТРОГО JSON.
         
         Формат JSON:
         [
             {{
                 "user_id": 12345, 
                 "achievements": [
-                    {{"title": "Название Ачивки", "desc": "Описание за что", "date": "{datetime.date.today()}"}}
+                    {{"title": "Название", "desc": "Описание", "date": "{datetime.date.today()}"}}
                 ]
             }}
         ]
-        
-        ВАЖНО:
-        1. Если юзера нет в базе (не уверен в ID), используй ИМЯ вместо ID.
-        2. НЕ пиши ничего кроме JSON.
         """
         
         try:
-            resp = await ask_ai(prompt, system_prompt="Ты сервер, отвечающий строго JSON массивом на русском языке.")
-            logger.info(f"[RAW AI ACHS]: {resp}") 
+            resp = await ask_ai(prompt, system_prompt="Ты сервер, отвечающий строго JSON.")
+            logger.info(f"[RAW AI ACHS {days}d]: {resp}") 
             
-            if not resp or resp.startswith("⚠️"):
-                return f"AI Error: {resp}"
+            if not resp or resp.startswith("⚠️"): return f"AI Error: {resp}"
 
             try:
                 clean_json = self._extract_json(resp)
                 data = json.loads(clean_json)
             except json.JSONDecodeError:
-                return f"⚠️ Ошибка JSON от AI. См. логи."
+                return f"⚠️ Ошибка JSON от AI."
 
             count = 0
             if isinstance(data, list):
                 for item in data:
                     uid = item.get('user_id')
-                    # Resolve Name -> ID if needed
                     if isinstance(uid, str) and not uid.isdigit():
                         uid = await self.db.get_user_id_by_name(self.guild_id, uid)
                     
                     new_achs = item.get('achievements', [])
                     if uid and new_achs:
                         try:
-                            uid = int(uid)
-                            c = await self.db.append_achievements(self.guild_id, uid, new_achs)
+                            c = await self.db.append_achievements(self.guild_id, int(uid), new_achs)
                             count += c
                         except: pass
             
-            return f"🏆 Выдано {count} новых ачивок."
+            return f"🏆 Выдано {count} новых ачивок (за {days} дн)."
         except Exception as e:
             return f"❌ Ошибка: {e}"
