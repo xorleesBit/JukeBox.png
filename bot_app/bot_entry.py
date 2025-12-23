@@ -69,6 +69,8 @@ async def on_ready():
         "bot_app.cogs.soundpad",
         "bot_app.cogs.user_interaction",
         "bot_app.cogs.progression",
+        "bot_app.cogs.fun",
+        "bot_app.cogs.ai_fun",
     ]
 
     for ext in initial_extensions:
@@ -80,6 +82,11 @@ async def on_ready():
 
     # Setup Audio
     audio_setup.setup_audio_libraries()
+    
+    # Start Log Archiver
+    from bot_app.features.log_archiver import LogArchiver
+    bot.archiver = LogArchiver(bot)
+    asyncio.create_task(bot.archiver.start())
 
     print("🔄 Restoring state...")
     state.loggers.clear()

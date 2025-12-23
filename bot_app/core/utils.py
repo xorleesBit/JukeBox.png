@@ -1,5 +1,6 @@
 import datetime
 import os
+from discord.ext import commands
 
 def get_msc_now() -> datetime.datetime:
     """Returns current time in Moscow timezone (UTC+3)."""
@@ -27,3 +28,19 @@ def fmt_bytes(num: int) -> str:
             return f"{num:3.1f}{unit}"
         num /= 1024.0
     return f"{num:.1f}TB"
+
+# --- Optimization Helpers ---
+
+def has_balance(amount: int):
+    async def predicate(ctx):
+        if amount <= 0: return True
+        from bot_app.core.dev_manager import dev_manager
+        if dev_manager.is_god_mode(ctx.author.id):
+            return True
+        
+        bal = await ctx.bot.db.get_balance(ctx.guild.id, ctx.author.id)
+        if bal < amount:
+            await ctx.send(f"❌ Недостаточно средств. Требуется: {amount}, у вас: {bal}")
+            return False
+        return True
+    return commands.check(predicate)

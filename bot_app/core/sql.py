@@ -338,6 +338,12 @@ ON CONFLICT (user_id) DO UPDATE SET
 GET_AFK = "SELECT message, since_ts FROM afk_status WHERE user_id=$1"
 DELETE_AFK = "DELETE FROM afk_status WHERE user_id=$1"
 
+# --- SAFETY & CLEANUP ---
+DELETE_ALL_NON_FAV_PHRASES = """
+DELETE FROM prank_phrases 
+WHERE guild_id=$1 AND is_favorite=FALSE
+"""
+
 # Daily & Economy
 UPDATE_DAILY_CLAIM = """
 UPDATE users SET daily_last_claim_ts=$3, balance=balance+$4 

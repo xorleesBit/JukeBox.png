@@ -6,6 +6,37 @@ import platform
 import psutil
 from bot_app.core.dev_manager import dev_manager
 from bot_app.features.error_handler import get_log_files, read_log_segment
+import io
+import contextlib
+
+class SQLModal(discord.ui.Modal, title="Execute SQL"):
+    query = discord.ui.TextInput(label="Query", style=discord.TextStyle.paragraph, placeholder="SELECT * FROM users LIMIT 1;")
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+
+    async def on_submit(self, interaction: discord.Interaction):
+        q = self.query.value
+        try:
+            res = await self.bot.db.pool.fetch(q)
+            if not res:
+                return await interaction.response.send_message("✅ Executed. No rows returned.", ephemeral=True)
+            
+            # Format output
+            lines = []
+            keys = res[0].keys()
+            lines.append(" | ".join(keys))
+            lines.append("-" * 30)
+            for row in res[:10]:
+                lines.append(" | ".join(str(val) for val in row.values()))
+            
+            txt = "\n".join(lines)
+            if len(txt) > 1900: txt = txt[:1900] + "..."
+            
+            await interaction.response.send_message(f"```prolog\n{txt}\n```", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
 class DebugView(discord.ui.View):
     def __init__(self, bot, user_id):
@@ -41,6 +72,7 @@ class DebugView(discord.ui.View):
             discord.SelectOption(label="System Status", emoji="🖥️", value="status"),
             discord.SelectOption(label="Error Logs", emoji="📜", value="logs"),
             discord.SelectOption(label="Actions", emoji="⚡", value="actions"),
+            discord.SelectOption(label="Database", emoji="🗄️", value="sql"),
         ])
         
         async def nav_cb(itx):
@@ -48,6 +80,7 @@ class DebugView(discord.ui.View):
             if val == "status": await self._show_status(itx)
             elif val == "logs": await self._show_logs_menu(itx)
             elif val == "actions": await self._show_actions(itx)
+            elif val == "sql": await itx.response.send_modal(SQLModal(self.bot))
         
         select.callback = nav_cb
         self.add_item(select)
@@ -59,11 +92,12 @@ class DebugView(discord.ui.View):
         py_ver = platform.python_version()
         ping = round(self.bot.latency * 1000)
         guilds = len(self.bot.guilds)
+        users = sum(g.member_count for g in self.bot.guilds)
         
         e = discord.Embed(title="🔧 System Status", color=discord.Color.dark_red())
         e.add_field(name="CPU / RAM", value=f"{cpu}% / {mem.percent}%", inline=True)
         e.add_field(name="Ping", value=f"{ping}ms", inline=True)
-        e.add_field(name="Guilds", value=str(guilds), inline=True)
+        e.add_field(name="Guilds / Users", value=f"{guilds} / {users}", inline=True)
         e.add_field(name="Python", value=py_ver, inline=True)
         e.add_field(name="OS", value=sys.platform, inline=True)
         e.set_footer(text=f"DevID: {self.user_id}")
@@ -106,6 +140,7 @@ class DebugView(discord.ui.View):
         btn_restart = discord.ui.Button(label="RESTART BOT", style=discord.ButtonStyle.danger, emoji="💀")
         async def restart_cb(i):
             await i.response.send_message("🔄 Restarting...", ephemeral=True)
+            # Python restart
             os.execv(sys.executable, ['python'] + sys.argv)
         btn_restart.callback = restart_cb
         self.add_item(btn_restart)
@@ -120,6 +155,29 @@ class DebugView(discord.ui.View):
                 await i.response.send_message(f"Error: {e}", ephemeral=True)
         btn_admin.callback = admin_cb
         self.add_item(btn_admin)
+        
+        btn_cogs = discord.ui.Button(label="Reload Extensions", style=discord.ButtonStyle.secondary, emoji="🔄")
+        async def cogs_cb(i):
+            log = ""
+            for ext in list(self.bot.extensions.keys()):
+                try:
+                    await self.bot.reload_extension(ext)
+                    log += f"✅ {ext}\n"
+                except Exception as e:
+                    log += f"❌ {ext}: {e}\n"
+            await i.response.send_message(f"```{{log}}```", ephemeral=True)
+        btn_cogs.callback = cogs_cb
+        self.add_item(btn_cogs)
+        
+        btn_archive = discord.ui.Button(label="Force Archive", style=discord.ButtonStyle.secondary, emoji="📦")
+        async def archive_cb(i):
+            if not hasattr(self.bot, 'archiver'):
+                return await i.response.send_message("Archiver not found.", ephemeral=True)
+            await i.response.send_message("📦 Archiving started...", ephemeral=True)
+            await self.bot.archiver.run_archive_cycle()
+            await i.followup.send("✅ Archiving finished.", ephemeral=True)
+        btn_archive.callback = archive_cb
+        self.add_item(btn_archive)
 
         self._add_back_btn()
         await itx.response.edit_message(embed=discord.Embed(title="⚡ Quick Actions"), view=self)

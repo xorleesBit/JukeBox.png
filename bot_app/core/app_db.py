@@ -201,6 +201,10 @@ class AppDB:
     async def delete_phrase(self, phrase_id: int):
         await self.pool.execute("UPDATE prank_phrases SET deleted=TRUE WHERE phrase_id=$1", phrase_id)
 
+    async def delete_all_non_fav_phrases(self, guild_id: int):
+        """Safely deletes all phrases for a guild EXCEPT favorites."""
+        await self.pool.execute(sql.DELETE_ALL_NON_FAV_PHRASES, guild_id)
+
     # --- New Methods for Rotation & Favorites ---
 
     async def set_phrase_favorite(self, phrase_id: int, is_fav: bool):
