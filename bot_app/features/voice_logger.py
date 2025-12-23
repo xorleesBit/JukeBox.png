@@ -9,7 +9,7 @@ import discord
 from discord.ext import voice_recv
 
 from bot_app.core.config import DEFAULT_CHUNK_DURATION, DEFAULT_PUBLISH_SECONDS, LOG_DIR, WORDS_FLUSH_SECONDS
-from bot_app.core.utils import safe_dirname, fmt_bytes, fmt_duration
+from bot_app.core.utils import safe_dirname, fmt_bytes, fmt_duration, get_msc_now
 from bot_app.audio.sinks import TimeStampedSink
 from .chunk_worker import ChunkProcessor, ChunkJob
 from bot_app.ui.ui import ControlView
@@ -96,11 +96,14 @@ class VoiceLogger:
 
     def log_event(self, ts: float, icon: str, text: str):
         if self.log_store:
-            self.log_store.append_event(ts, icon, text)
+            # We ignore 'ts' (which is usually unix timestamp) for text formatting
+            # and use current MSC time for the log line prefix
+            now_msc = get_msc_now().timestamp()
+            self.log_store.append_event(now_msc, icon, text)
 
     def log_chat_message(self, user: str, text: str):
         if self.log_store and self.is_recording and not self.is_paused:
-            self.log_store.append_event(time.time(), "💬", f"{user}: {text}")
+            self.log_event(time.time(), "💬", f"{user}: {text}")
 
     def recorded_seconds(self) -> float:
         if not self.is_recording:

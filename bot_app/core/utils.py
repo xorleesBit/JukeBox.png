@@ -1,54 +1,29 @@
-import os
-import re
 import datetime
+import os
 
-BAD_CHARS = '<>:"/\\|?*'
-
-def safe_dirname(name: str) -> str:
-    out = "".join("_" if c in BAD_CHARS else c for c in (name or "guild"))
-    return out.strip() or "guild"
-
-def fmt_bytes(n: int) -> str:
-    n = int(max(0, n))
-    units = ["B", "KB", "MB", "GB"]
-    f = float(n)
-    for u in units:
-        if f < 1024 or u == units[-1]:
-            return f"{int(f)} {u}" if u == "B" else f"{f:.2f} {u}"
-        f /= 1024.0
-    return f"{n} B"
-
-def fmt_duration(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    m, s = divmod(seconds, 60)
-    h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+def get_msc_now() -> datetime.datetime:
+    """Returns current time in Moscow timezone (UTC+3)."""
+    utc_now = datetime.datetime.now(datetime.timezone.utc)
+    msc_tz = datetime.timezone(datetime.timedelta(hours=3))
+    return utc_now.astimezone(msc_tz)
 
 def format_abs_ts(ts: float) -> str:
-    return datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+    """Formats timestamp to HH:MM:SS in MSC."""
+    utc_dt = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+    msc_tz = datetime.timezone(datetime.timedelta(hours=3))
+    return utc_dt.astimezone(msc_tz).strftime("%H:%M:%S")
 
-def hour_key_from_ts(ts: float) -> str:
-    dt = datetime.datetime.fromtimestamp(ts)
-    return dt.strftime("%Y-%m-%d_%H")
+def safe_dirname(name: str) -> str:
+    keep_chars = set(" abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ")
+    return "".join(c if c in keep_chars else "_" for c in (name or "guild")).strip() or "guild"
 
-def tail_lines(path: str, n: int = 30) -> str:
-    if not path or not os.path.exists(path):
-        return ""
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            block = 2048
-            data = b""
-            while size > 0 and data.count(b"\n") <= n:
-                step = block if size - block > 0 else size
-                size -= step
-                f.seek(size)
-                data = f.read(step) + data
-            txt = data.decode("utf-8", errors="ignore").splitlines()[-n:]
-            return "\n".join(txt)
-    except Exception:
-        return ""
+def fmt_duration(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}:{s:02d}"
 
-def is_hour_file(fn: str) -> bool:
-    return bool(re.fullmatch(r"\d{2}\.txt", fn))
+def fmt_bytes(num: int) -> str:
+    for unit in ["B", "KB", "MB", "GB"]:
+        if abs(num) < 1024.0:
+            return f"{num:3.1f}{unit}"
+        num /= 1024.0
+    return f"{num:.1f}TB"

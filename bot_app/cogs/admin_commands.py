@@ -2,8 +2,10 @@ import discord
 import os
 import shutil
 import logging
+import re
+import datetime
 from discord.ext import commands
-from bot_app.core.config import PHRASES_DIR
+from bot_app.core.config import PHRASES_DIR, LOG_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -13,20 +15,9 @@ class AdminCommands(commands.Cog):
         self.db = bot.db
         self.loggers = bot.loggers
 
-    async def ensure_panel(self, guild, force=False):
-        # This calls the logic in bot_entry.py ideally, but we can't import main.
-        # So we invoke the global App logic if available, or duplicate simply.
-        # Since bot_entry has the logic, we will keep panel management there mostly, 
-        # or expose a method on the bot object. 
-        # For now, let's assume bot has a helper or we trigger the event.
-        # We can trigger on_guild_join manually? No.
-        # Let's just use the existing command logic but in Cog.
-        pass # Panel logic is complex and tied to App class in bot_entry. Let's keep panel cmds in bot_entry for now or refactor App later.
-
     @commands.command(name="setup_panel")
     @commands.has_permissions(administrator=True)
     async def cmd_setup_panel(self, ctx):
-        # We'll rely on the main bot to have 'ensure_panel' attached or injected.
         if hasattr(self.bot, 'ensure_panel_func'):
             await self.bot.ensure_panel_func(ctx.guild, force_create_channel=True)
             await ctx.send("Панель пересоздана.", delete_after=5)
@@ -38,24 +29,47 @@ class AdminCommands(commands.Cog):
     async def cmd_panel_refresh(self, ctx):
         if hasattr(self.bot, 'ensure_panel_func'):
             await self.bot.ensure_panel_func(ctx.guild, force_create_channel=False)
-            # await ctx.message.delete() - handled by global on_message
         else:
             await ctx.send("Функция недоступна.", delete_after=5)
 
     @commands.command(name="delete_all_phrases")
     @commands.has_permissions(administrator=True)
     async def cmd_delete_all_phrases(self, ctx):
+        # Initial user command is auto-deleted by on_message usually, but check
         confirm_msg = await ctx.send("⚠️ **Удалить ВСЕ пранки?** (Напишите `confirm`)")
-        def check(m): return m.author == ctx.author and m.content == "confirm"
-        try: await self.bot.wait_for("message", check=check, timeout=15)
-        except: return await ctx.send("Отмена.", delete_after=5)
         
+        def check(m): return m.author == ctx.author and m.content == "confirm" and m.channel == ctx.channel
+        try:
+            msg = await self.bot.wait_for("message", check=check, timeout=15)
+            await msg.delete() # Delete user's confirm
+        except:
+            await confirm_msg.delete()
+            return await ctx.send("Отмена.", delete_after=5)
+        
+        await confirm_msg.delete()
         await self.db.pool.execute("DELETE FROM prank_phrases WHERE guild_id=$1", ctx.guild.id)
         guild_dir = os.path.join(PHRASES_DIR, str(ctx.guild.id))
         if os.path.exists(guild_dir):
             try: shutil.rmtree(guild_dir)
             except: pass
         await ctx.send("✅ Все удалено.", delete_after=5)
+
+    @commands.command(name="reset_all_achs")
+    @commands.has_permissions(administrator=True)
+    async def cmd_reset_all_achs(self, ctx):
+        confirm_msg = await ctx.send(embed=discord.Embed(description="⚠️ **Сбросить ВСЕ ачивки?**\nНапишите `confirm`.", color=discord.Color.red()))
+        
+        def check(m): return m.author == ctx.author and m.content == "confirm" and m.channel == ctx.channel
+        try:
+            msg = await self.bot.wait_for("message", check=check, timeout=15)
+            await msg.delete()
+        except:
+            await confirm_msg.delete()
+            return await ctx.send(embed=discord.Embed(description="Отмена.", color=discord.Color.greyple()), delete_after=5)
+        
+        await confirm_msg.delete()
+        await self.db.reset_all_achievements(ctx.guild.id)
+        await ctx.send(embed=discord.Embed(description="✅ Все достижения удалены.", color=discord.Color.green()), delete_after=5)
 
     @commands.command(name="play_random")
     @commands.has_permissions(administrator=True)
@@ -66,21 +80,6 @@ class AdminCommands(commands.Cog):
         else:
             await ctx.send("Логгер выключен.", delete_after=5)
 
-    @commands.command(name="reset_all_achs")
-    @commands.has_permissions(administrator=True)
-    async def cmd_reset_all_achs(self, ctx):
-        msg = await ctx.send(embed=discord.Embed(description="⚠️ **Вы уверены, что хотите удалить ВСЕ достижения у ВСЕХ пользователей?**\nНапишите `confirm` для подтверждения.", color=discord.Color.red()))
-        
-        def check(m): return m.author == ctx.author and m.content == "confirm" and m.channel == ctx.channel
-        
-        try:
-            await self.bot.wait_for("message", check=check, timeout=15)
-        except:
-            return await ctx.send(embed=discord.Embed(description="Отмена (таймаут).", color=discord.Color.greyple()), delete_after=5)
-        
-        await self.db.reset_all_achievements(ctx.guild.id)
-        await ctx.send(embed=discord.Embed(description="✅ Все достижения удалены.", color=discord.Color.green()))
-
     @commands.command(name="debug")
     @commands.has_permissions(administrator=True)
     async def cmd_debug(self, ctx):
@@ -89,6 +88,50 @@ class AdminCommands(commands.Cog):
         if l:
             msg += f"Rec: {l.is_recording}\nPrank: {'OK' if l.prank else 'NO'}\n"
         await ctx.send(msg, delete_after=20)
+
+    @commands.command(name="migrate_logs_msc")
+    @commands.has_permissions(administrator=True)
+    async def cmd_migrate_logs(self, ctx):
+        """Adds +3 hours to all timestamps in logs."""
+        status = await ctx.send("⏳ Начинаю миграцию времени...")
+        count = 0
+        
+        # Regex for [HH:MM:SS]
+        time_re = re.compile(r"^\\[(\d{2}:\d{2}:\d{2})\\]")
+        
+        for root, dirs, files in os.walk(LOG_DIR):
+            for file in files:
+                if file.endswith(".log") and not file.endswith(".events.log"):
+                    path = os.path.join(root, file)
+                    new_lines = []
+                    modified = False
+                    
+                    try:
+                        with open(path, "r", encoding="utf-8-sig") as f:
+                            lines = f.readlines()
+                        
+                        for line in lines:
+                            match = time_re.match(line)
+                            if match:
+                                t_str = match.group(1)
+                                try:
+                                    # Parse -> Add 3h -> Format
+                                    dt = datetime.datetime.strptime(t_str, "%H:%M:%S")
+                                    new_dt = dt + datetime.timedelta(hours=3)
+                                    new_t_str = new_dt.strftime("%H:%M:%S")
+                                    line = line.replace(f"[{t_str}]", f"[{new_t_str}]", 1)
+                                    modified = True
+                                except: pass
+                            new_lines.append(line)
+                        
+                        if modified:
+                            with open(path, "w", encoding="utf-8-sig") as f:
+                                f.writelines(new_lines)
+                            count += 1
+                    except Exception as e:
+                        logger.error(f"Error migrating {path}: {e}")
+
+        await status.edit(content=f"✅ Миграция завершена. Обновлено файлов: {count}")
 
 async def setup(bot):
     await bot.add_cog(AdminCommands(bot))

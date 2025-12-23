@@ -88,23 +88,21 @@ class PrankSettingsView(discord.ui.View):
         self.settings.set_bool("prank_auto_tune_enabled", val)
         await interaction.response.send_message(f"Auto-Tune режим: {val}", ephemeral=True)
 
-    @discord.ui.button(label="Auto-Tune %", style=discord.ButtonStyle.secondary)
-    async def autotune_chance_btn(self, interaction: discord.Interaction, _):
-        class _ChanceModal(discord.ui.Modal):
+    @discord.ui.button(label="Цена (Money)", style=discord.ButtonStyle.success)
+    async def price_btn(self, interaction: discord.Interaction, _):
+        class _PriceModal(discord.ui.Modal):
             def __init__(self, s):
-                super().__init__(title="Шанс Auto-Tune")
+                super().__init__(title="Цена за фразу")
                 self.s = s
-                self.val = discord.ui.TextInput(label="Процент (0-100)", default=str(s.get_int("prank_auto_tune_chance") or 20), required=True)
+                self.val = discord.ui.TextInput(label="Монеты (0=бесплатно)", default=str(s.get_int("prank_play_cost") or 0), required=True)
                 self.add_item(self.val)
             async def on_submit(self, i):
                 try:
                     v = int(self.val.value)
-                    if v < 0: v = 0
-                    if v > 100: v = 100
-                    self.s.set_int("prank_auto_tune_chance", v)
-                    await i.response.send_message(f"Шанс Auto-Tune: {v}%", ephemeral=True)
+                    self.s.set_int("prank_play_cost", v)
+                    await i.response.send_message(f"Цена воспроизведения: {v} монет", ephemeral=True)
                 except: await i.response.send_message("Ошибка", ephemeral=True)
-        await interaction.response.send_modal(_ChanceModal(self.settings))
+        await interaction.response.send_modal(_PriceModal(self.settings))
 
     @discord.ui.button(label="Лимиты", style=discord.ButtonStyle.secondary)
     async def usage_btn(self, interaction: discord.Interaction, _):
@@ -325,116 +323,6 @@ class UserManagementView(discord.ui.View):
                     await i.response.send_message("Неверный ID", ephemeral=True)
         await interaction.response.send_modal(_UnblockModal(self.db, self.guild_id))
 
-# --- Playback ---
-class PlaybackView(discord.ui.View):
-    def __init__(self, logger):
-        super().__init__(timeout=60)
-        self.logger = logger
-
-    async def _check(self, i):
-        if not self.logger or not self.logger.prank:
-            await i.response.send_message("Логгер или Пранк режим выключены.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Случайная фраза", style=discord.ButtonStyle.success)
-    async def play_rnd(self, interaction: discord.Interaction, _):
-        if not await self._check(interaction): return
-        await interaction.response.defer(ephemeral=True)
-        await self.logger.prank.play_random()
-        await interaction.followup.send("🎲 Играет случайная фраза.", ephemeral=True)
-
-    @discord.ui.button(label="По ID", style=discord.ButtonStyle.secondary)
-    async def play_id(self, interaction: discord.Interaction, _):
-        if not await self._check(interaction): return
-        class _PlayModal(discord.ui.Modal):
-            def __init__(self, logger):
-                super().__init__(title="Воспроизвести фразу")
-                self.logger = logger
-                self.pid = discord.ui.TextInput(label="ID Фразы", required=True)
-                self.add_item(self.pid)
-            async def on_submit(self, i):
-                try:
-                    pid = int(self.pid.value)
-                    await self.logger.prank.play_phrase_id(pid, record_play=False)
-                    await i.response.send_message(f"Играет фраза #{pid}", ephemeral=True)
-                except: 
-                    await i.response.send_message("Неверный ID", ephemeral=True)
-        await interaction.response.send_modal(_PlayModal(self.logger))
-
-# --- AI Views ---
-class AIModal(discord.ui.Modal, title="Запрос к AI"):
-    prompt = discord.ui.TextInput(
-        label="Ваш запрос",
-        style=discord.TextStyle.paragraph,
-        placeholder="Напиши шутку...",
-        required=True,
-        max_length=1000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        answer = await ask_ai(self.prompt.value)
-        if len(answer) <= 1900:
-            await interaction.followup.send(f"🤖 **AI:**\n{answer}", ephemeral=True)
-        else:
-            chunks = [answer[i:i+1900] for i in range(0, len(answer), 1900)]
-            for chunk in chunks:
-                await interaction.followup.send(f"🤖 **AI:**\n{chunk}", ephemeral=True)
-
-class ProfileUserSelect(discord.ui.UserSelect):
-    def __init__(self, db, guild_id):
-        self.db = db
-        self.guild_id = guild_id
-        super().__init__(placeholder="Выберите пользователя для просмотра профиля...")
-
-    async def callback(self, interaction: discord.Interaction):
-        user = self.values[0]
-        uid = user.id
-        profile = await self.db.get_profile(self.guild_id, uid)
-        if not profile:
-            return await interaction.response.send_message(f"Профиль для {user.display_name} еще не сформирован.", ephemeral=True)
-        
-        user_data = await self.db.get_user(self.guild_id, uid)
-        name = user_data['display_name'] if user_data else user.display_name
-
-        e = discord.Embed(title=f"🤖 AI Профиль: {name}", color=discord.Color.teal())
-        games = profile.get('games', [])
-        tech = profile.get('tech', [])
-        likes = profile.get('likes', [])
-        dislikes = profile.get('dislikes', [])
-        personality = profile.get('personality', 'N/A')
-        relations = profile.get('relations', {})
-        
-        if games: e.add_field(name="🎮 Игры", value=", ".join(games)[:1024], inline=False)
-        if tech: e.add_field(name="💻 Технологии", value=", ".join(tech)[:1024], inline=False)
-        if likes: e.add_field(name="👍 Любит", value=", ".join(likes)[:1024], inline=True)
-        if dislikes: e.add_field(name="👎 Не любит", value=", ".join(dislikes)[:1024], inline=True)
-        if relations:
-            rel_str = "\n".join([f"**{u}**: {s}" for u, s in relations.items()])
-            e.add_field(name="👥 Отношения", value=rel_str[:1024], inline=False)
-        e.add_field(name="🧠 Личность", value=str(personality)[:1024], inline=False)
-        await interaction.response.send_message(embed=e, ephemeral=True)
-
-class AIView(discord.ui.View):
-    def __init__(self, db, guild_id, guild_name, profiles):
-        super().__init__(timeout=120)
-        self.db = db
-        self.guild_id = guild_id
-        self.guild_name = guild_name
-        self.add_item(ProfileUserSelect(db, guild_id))
-
-    @discord.ui.button(label="🧠 Сформировать профили", style=discord.ButtonStyle.primary, row=1)
-    async def btn_analyze(self, interaction: discord.Interaction, _):
-        await interaction.response.send_message("⚙️ Запущен анализ логов... Ждите отчета.", ephemeral=True)
-        manager = ProfileManager(self.db, self.guild_id)
-        report = await manager.run_analysis(self.guild_name)
-        await interaction.followup.send(report, ephemeral=True)
-
-    @discord.ui.button(label="💬 Чат с AI", style=discord.ButtonStyle.secondary, row=1)
-    async def btn_chat(self, interaction: discord.Interaction, _):
-        await interaction.response.send_modal(AIModal())
-
 # --- Playback & Favorites ---
 
 class FXSelect(discord.ui.Select):
@@ -450,11 +338,29 @@ class FXSelect(discord.ui.Select):
         super().__init__(placeholder="FX Play...", options=options, row=1)
 
     async def callback(self, interaction: discord.Interaction):
+        # Pay check for manual play with effect (can be same logic)
+        # But effect is usually free if play is paid. 
+        # Let's assume FX also charges? Or logic is in play_phrase_id?
+        # Logic: play_phrase_id is backend. Charges should be UI.
+        
+        settings = self.logger.settings
+        cost = settings.get_int("prank_play_cost") or 0
+        user_id = interaction.user.id
+        
+        if cost > 0:
+            bal = await self.db.get_balance(interaction.guild_id, user_id)
+            if bal < cost:
+                return await interaction.response.send_message(f"Не хватает монет! Нужно {cost}, у вас {bal}.", ephemeral=True)
+            await self.db.update_balance(interaction.guild_id, user_id, -cost)
+        
         effect = self.values[0]
         if self.logger and self.logger.prank:
             await interaction.response.defer(ephemeral=True)
             await self.logger.prank.play_phrase_id(self.phrase_id, record_play=False, force_effect=effect)
-            await interaction.followup.send(f"Играем FX: {effect}", ephemeral=True)
+            
+            msg = f"Играем FX: {effect}"
+            if cost > 0: msg += f" (-{cost} 💰)"
+            await interaction.followup.send(msg, ephemeral=True)
         else: await interaction.response.send_message("Логгер не активен.", ephemeral=True)
 
 class PhraseActionView(discord.ui.View):
@@ -475,10 +381,24 @@ class PhraseActionView(discord.ui.View):
 
     @discord.ui.button(label="Play", style=discord.ButtonStyle.secondary, row=0)
     async def btn_play(self, interaction: discord.Interaction, _):
+        # PAYMENT LOGIC
+        settings = self.logger.settings
+        cost = settings.get_int("prank_play_cost") or 0
+        user_id = interaction.user.id
+        
+        if cost > 0:
+            bal = await self.db.get_balance(interaction.guild_id, user_id)
+            if bal < cost:
+                return await interaction.response.send_message(f"Не хватает монет! Нужно {cost}, у вас {bal}.", ephemeral=True)
+            await self.db.update_balance(interaction.guild_id, user_id, -cost)
+
         if self.logger and self.logger.prank:
             await interaction.response.defer(ephemeral=True)
             await self.logger.prank.play_phrase_id(self.phrase_id, record_play=False)
-            await interaction.followup.send("Играем...", ephemeral=True)
+            
+            msg = "Играем..."
+            if cost > 0: msg += f" (-{cost} 💰)"
+            await interaction.followup.send(msg, ephemeral=True)
         else: await interaction.response.send_message("Логгер не активен", ephemeral=True)
 
     @discord.ui.button(label="Rename", style=discord.ButtonStyle.primary, row=0)
@@ -514,7 +434,62 @@ class PhraseSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         pid = int(self.values[0])
+        # Only visible to user who clicked
         await interaction.response.send_message(f"Фраза #{pid}", view=PhraseActionView(self.db, pid, self.logger), ephemeral=True)
+
+class PlaybackView(discord.ui.View):
+    def __init__(self, logger):
+        super().__init__(timeout=60)
+        self.logger = logger
+
+    @discord.ui.button(label="Случайная фраза", style=discord.ButtonStyle.success)
+    async def play_rnd(self, interaction: discord.Interaction, _):
+        if not self.logger or not self.logger.prank: return await interaction.response.send_message("Логгер выключен", ephemeral=True)
+        
+        # Payment for random? Probably yes
+        settings = self.logger.settings
+        cost = settings.get_int("prank_play_cost") or 0
+        user_id = interaction.user.id
+        
+        if cost > 0:
+            bal = await self.logger.db.get_balance(interaction.guild_id, user_id) # access db via logger
+            if bal < cost: return await interaction.response.send_message(f"Не хватает монет! Нужно {cost}.", ephemeral=True)
+            await self.logger.db.update_balance(interaction.guild_id, user_id, -cost)
+
+        await interaction.response.defer(ephemeral=True)
+        await self.logger.prank.play_random()
+        
+        msg = "🎲 Играем..."
+        if cost > 0: msg += f" (-{cost} 💰)"
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @discord.ui.button(label="По ID", style=discord.ButtonStyle.secondary)
+    async def play_id(self, interaction: discord.Interaction, _):
+        class _PlayModal(discord.ui.Modal):
+            def __init__(self, logger):
+                super().__init__(title="Играть по ID")
+                self.logger = logger
+                self.pid = discord.ui.TextInput(label="ID", required=True)
+                self.add_item(self.pid)
+            async def on_submit(self, i):
+                try:
+                    # Payment here too? Yes.
+                    settings = self.logger.settings
+                    cost = settings.get_int("prank_play_cost") or 0
+                    user_id = i.user.id
+                    
+                    if cost > 0:
+                        bal = await self.logger.db.get_balance(i.guild_id, user_id)
+                        if bal < cost: return await i.response.send_message(f"Не хватает монет! Нужно {cost}.", ephemeral=True)
+                        await self.logger.db.update_balance(i.guild_id, user_id, -cost)
+
+                    await self.logger.prank.play_phrase_id(int(self.pid.value), record_play=False)
+                    
+                    msg = "Ок"
+                    if cost > 0: msg += f" (-{cost} 💰)"
+                    await i.response.send_message(msg, ephemeral=True)
+                except: await i.response.send_message("Ошибка", ephemeral=True)
+        await interaction.response.send_modal(_PlayModal(self.logger))
 
 class UserSelect(discord.ui.UserSelect):
     def __init__(self, db, logger, guild_id):
@@ -522,6 +497,10 @@ class UserSelect(discord.ui.UserSelect):
         super().__init__(placeholder="Выберите пользователя...")
 
     async def callback(self, interaction: discord.Interaction):
+        # Filter logic here? Or just show all.
+        # User requested: "is not shown only for user but hangs for everyone".
+        # This interaction response IS ephemeral=True below.
+        # But the !phrases command output is what they meant.
         user = self.values[0]
         phrases = await self.db.get_all_user_phrases(self.guild_id, user.id, limit=25)
         if not phrases: return await interaction.response.send_message("Нет фраз.", ephemeral=True)
@@ -534,6 +513,51 @@ class FavoritesView(discord.ui.View):
         super().__init__(timeout=60)
         self.add_item(UserSelect(db, logger, guild_id))
 
+# --- AI ---
+
+class AIModal(discord.ui.Modal, title="AI Chat"):
+    prompt = discord.ui.TextInput(label="Вопрос", style=discord.TextStyle.paragraph, required=True)
+    async def on_submit(self, i):
+        await i.response.defer(ephemeral=True)
+        ans = await ask_ai(self.prompt.value)
+        if len(ans) > 1900:
+             chunks = [ans[j:j+1900] for j in range(0, len(ans), 1900)]
+             for c in chunks: await i.followup.send(c, ephemeral=True)
+        else: await i.followup.send(ans, ephemeral=True)
+
+class ProfileUserSelect(discord.ui.UserSelect):
+    def __init__(self, db, guild_id):
+        self.db = db; self.guild_id = guild_id
+        super().__init__(placeholder="Чей профиль?")
+    async def callback(self, i):
+        u = self.values[0]
+        p = await self.db.get_profile(self.guild_id, u.id)
+        if not p: return await i.response.send_message("Профиль не готов.", ephemeral=True)
+        e = discord.Embed(title=f"Профиль: {u.display_name}", color=discord.Color.teal())
+        for k, v in p.items(): 
+            if v and isinstance(v, list): val = ", ".join(v)
+            elif isinstance(v, dict): val = str(v)
+            else: val = str(v)
+            e.add_field(name=k.capitalize(), value=val[:1024], inline=False)
+        await i.response.send_message(embed=e, ephemeral=True)
+
+class AIView(discord.ui.View):
+    def __init__(self, db, guild_id, guild_name, profiles):
+        super().__init__(timeout=120)
+        self.db = db; self.guild_id = guild_id; self.guild_name = guild_name
+        self.add_item(ProfileUserSelect(db, guild_id))
+    
+    @discord.ui.button(label="Анализ (Обновить)", style=discord.ButtonStyle.primary, row=1)
+    async def btn_analyze(self, i, _):
+        await i.response.send_message("Запущен анализ...", ephemeral=True)
+        rep = await ProfileManager(self.db, self.guild_id).run_analysis(self.guild_name)
+        await i.followup.send(rep, ephemeral=True)
+
+    @discord.ui.button(label="Чат", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_chat(self, i, _):
+        await i.response.send_modal(AIModal())
+
+# --- Control View (Bottom of Panel) ---
 class ControlView(discord.ui.View):
     def __init__(self, logger_obj):
         super().__init__(timeout=None)

@@ -161,7 +161,7 @@ class GeneralCommands(commands.Cog):
         logger = self.loggers.get(ctx.guild.id)
         view = discord.ui.View()
         view.add_item(PhraseSelect(phrases, self.db, logger))
-        await ctx.send(embed=discord.Embed(description=f"Фразы <@{target_id}>"), view=view)
+        await ctx.send(embed=discord.Embed(description=f"Фразы <@{target_id}>:"), view=view, delete_after=60)
 
 async def setup(bot):
     await bot.add_cog(GeneralCommands(bot))
