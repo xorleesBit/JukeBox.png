@@ -297,6 +297,9 @@ class AppDB:
     async def get_buff(self, guild_id: int, user_id: int, buff_id: str):
         return await self.pool.fetchrow(sql.GET_SPECIFIC_BUFF, guild_id, user_id, buff_id, time.time())
 
+    async def update_speech_stats(self, guild_id: int, user_id: int, seconds: float):
+        await self.pool.execute(sql.UPDATE_SPEECH_STATS, guild_id, user_id, seconds)
+
     # ---- V4 Economy & Progression ----
     async def claim_daily(self, guild_id: int, user_id: int, amount: int):
         await self.pool.execute(sql.UPDATE_DAILY_CLAIM, guild_id, user_id, time.time(), amount)

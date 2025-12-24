@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
     opt_out INT DEFAULT 0,
     daily_last_claim_ts DOUBLE PRECISION DEFAULT 0,
     free_phrase_plays INT DEFAULT 0,
+    total_speech_seconds DOUBLE PRECISION DEFAULT 0,
     PRIMARY KEY (guild_id, user_id)
 );
 """
@@ -114,33 +115,6 @@ CREATE TABLE IF NOT EXISTS persistent_state (
 );
 """
 
-MIGRATION_V4 = """
-DO $$ 
-BEGIN 
-    -- Users migrations
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='daily_last_claim_ts') THEN 
-        ALTER TABLE users ADD COLUMN daily_last_claim_ts DOUBLE PRECISION DEFAULT 0; 
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='free_phrase_plays') THEN 
-        ALTER TABLE users ADD COLUMN free_phrase_plays INT DEFAULT 0; 
-    END IF;
-
-    -- Prank phrases migrations (legacy check)
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='prank_phrases' AND column_name='is_favorite') THEN 
-        ALTER TABLE prank_phrases ADD COLUMN is_favorite BOOLEAN DEFAULT FALSE; 
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='prank_phrases' AND column_name='name') THEN 
-        ALTER TABLE prank_phrases ADD COLUMN name TEXT; 
-    END IF;
-END $$;
-"""
-
-INIT_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_users_xp ON users(guild_id, xp DESC);
-CREATE INDEX IF NOT EXISTS idx_users_rating ON users(guild_id, rating DESC);
-CREATE INDEX IF NOT EXISTS idx_soundpad_guild ON soundpad_sounds(guild_id);
-"""
-
 INIT_SCHEMA_INVENTORY = """
 CREATE TABLE IF NOT EXISTS user_inventory (
     guild_id BIGINT NOT NULL,
@@ -162,36 +136,35 @@ CREATE TABLE IF NOT EXISTS active_buffs (
 );
 """
 
-# ... (Existing migration query) ...
+MIGRATION_V4 = """
+DO $$ 
+BEGIN 
+    -- Users migrations
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='daily_last_claim_ts') THEN 
+        ALTER TABLE users ADD COLUMN daily_last_claim_ts DOUBLE PRECISION DEFAULT 0; 
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='free_phrase_plays') THEN 
+        ALTER TABLE users ADD COLUMN free_phrase_plays INT DEFAULT 0; 
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='total_speech_seconds') THEN 
+        ALTER TABLE users ADD COLUMN total_speech_seconds DOUBLE PRECISION DEFAULT 0; 
+    END IF;
 
-# --- INVENTORY & BUFFS QUERIES ---
-ADD_ITEM = """
-INSERT INTO user_inventory (guild_id, user_id, item_id, count)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (guild_id, user_id, item_id) DO UPDATE SET count = user_inventory.count + $4
+    -- Prank phrases migrations (legacy check)
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='prank_phrases' AND column_name='is_favorite') THEN 
+        ALTER TABLE prank_phrases ADD COLUMN is_favorite BOOLEAN DEFAULT FALSE; 
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='prank_phrases' AND column_name='name') THEN 
+        ALTER TABLE prank_phrases ADD COLUMN name TEXT; 
+    END IF;
+END $$;
 """
 
-REMOVE_ITEM = """
-UPDATE user_inventory SET count = count - $4 
-WHERE guild_id=$1 AND user_id=$2 AND item_id=$3 AND count >= $4
-RETURNING count
+INIT_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_users_xp ON users(guild_id, xp DESC);
+CREATE INDEX IF NOT EXISTS idx_users_rating ON users(guild_id, rating DESC);
+CREATE INDEX IF NOT EXISTS idx_soundpad_guild ON soundpad_sounds(guild_id);
 """
-
-GET_INVENTORY = "SELECT item_id, count FROM user_inventory WHERE guild_id=$1 AND user_id=$2 AND count > 0"
-
-UPSERT_BUFF = """
-INSERT INTO active_buffs (guild_id, user_id, buff_id, expires_at, value)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (guild_id, user_id, buff_id) DO UPDATE SET 
-    expires_at = GREATEST(active_buffs.expires_at, $4),
-    value = $5
-"""
-# Note: Logic above replaces expiration with new one if further, but usually we want ADDitive duration.
-# We will handle date calculation in Python and just set the new absolute date here.
-
-GET_ACTIVE_BUFFS = "SELECT buff_id, expires_at, value FROM active_buffs WHERE guild_id=$1 AND user_id=$2 AND expires_at > $3"
-GET_SPECIFIC_BUFF = "SELECT expires_at, value FROM active_buffs WHERE guild_id=$1 AND user_id=$2 AND buff_id=$3 AND expires_at > $4"
-CLEANUP_BUFFS = "DELETE FROM active_buffs WHERE expires_at < $1"
 
 # Queries
 GET_CONFIG = "SELECT settings FROM guild_configs WHERE guild_id=$1"
@@ -407,3 +380,35 @@ DECREMENT_FREE_PLAYS = "UPDATE users SET free_phrase_plays = GREATEST(0, free_ph
 
 # Progression Reset (Soft)
 RESET_XP_KEEP_LEVEL = "UPDATE users SET xp=0 WHERE guild_id=$1"
+
+# --- INVENTORY & BUFFS QUERIES ---
+ADD_ITEM = """
+INSERT INTO user_inventory (guild_id, user_id, item_id, count)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (guild_id, user_id, item_id) DO UPDATE SET count = user_inventory.count + $4
+"""
+
+REMOVE_ITEM = """
+UPDATE user_inventory SET count = count - $4 
+WHERE guild_id=$1 AND user_id=$2 AND item_id=$3 AND count >= $4
+RETURNING count
+"""
+
+GET_INVENTORY = "SELECT item_id, count FROM user_inventory WHERE guild_id=$1 AND user_id=$2 AND count > 0"
+
+UPSERT_BUFF = """
+INSERT INTO active_buffs (guild_id, user_id, buff_id, expires_at, value)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (guild_id, user_id, buff_id) DO UPDATE SET 
+    expires_at = GREATEST(active_buffs.expires_at, $4),
+    value = $5
+"""
+
+GET_ACTIVE_BUFFS = "SELECT buff_id, expires_at, value FROM active_buffs WHERE guild_id=$1 AND user_id=$2 AND expires_at > $3"
+GET_SPECIFIC_BUFF = "SELECT expires_at, value FROM active_buffs WHERE guild_id=$1 AND user_id=$2 AND buff_id=$3 AND expires_at > $4"
+CLEANUP_BUFFS = "DELETE FROM active_buffs WHERE expires_at < $1"
+
+UPDATE_SPEECH_STATS = """
+UPDATE users SET total_speech_seconds = total_speech_seconds + $3 
+WHERE guild_id=$1 AND user_id=$2
+"""

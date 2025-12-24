@@ -91,5 +91,20 @@ class AdminCommands(commands.Cog):
             
         await ctx.send(f"📂 Найдено архивов: {len(found_files)}", files=found_files[:10])
 
+    @commands.command(name="cut")
+    @commands.has_permissions(administrator=True)
+    async def cmd_cut(self, ctx):
+        """✂️ Экстренно завершить запись текущего фрагмента и отправить на транскрибацию (Высший приоритет)."""
+        logger = self.loggers.get(ctx.guild.id)
+        if not logger or not logger.is_recording:
+            return await ctx.send("❌ Логгер не активен.", delete_after=5)
+        
+        try: await ctx.message.add_reaction("✂️")
+        except: pass
+        
+        # Priority 0 = Emergency (Normal is 10)
+        await logger.rotate(priority=0)
+        await ctx.send("✅ Запись обрезана и отправлена в приоритетную очередь.", delete_after=10)
+
 async def setup(bot):
     await bot.add_cog(AdminCommands(bot))

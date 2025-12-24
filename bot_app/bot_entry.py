@@ -109,22 +109,66 @@ async def on_ready():
         # We start background task for panel logic to not block on_ready too long
         asyncio.create_task(panel_control.ensure_panel_logic(bot, g, app_db, force_create_channel=False))
 
+import signal
+
 # --- Entry Point ---
 
+async def shutdown_handler(signal_type):
+    print(f"\n🛑 Received {signal_type}. Starting graceful shutdown...")
+    
+    # 1. Stop all Voice Loggers (flushes current buffers to worker)
+    if hasattr(bot, 'loggers'):
+        print(f"   Stopping {len(bot.loggers)} active loggers...")
+        # Use gather to stop parallel
+        await asyncio.gather(*[l.stop() for l in bot.loggers.values()])
+    
+    # 2. Wait for Workers to finish queue
+    if hasattr(bot, 'loggers'):
+        print("   Waiting for processors to finish pending jobs (this may take time)...")
+        # We need to run this in a thread executor because join() blocks
+        loop = asyncio.get_running_loop()
+        for l in bot.loggers.values():
+            if hasattr(l, 'processor'):
+                await loop.run_in_executor(None, l.processor.join)
+    
+    # 3. Close DB
+    if hasattr(bot, 'db'):
+        print("   Closing Database...")
+        await bot.db.close()
+        
+    print("👋 Graceful shutdown complete. Bye!")
+    # Force exit to kill daemon threads
+    os._exit(0)
+
 async def main():
+    # Setup Signal Handlers
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown_handler(s)))
+        except NotImplementedError:
+            # Windows loop might not support add_signal_handler in some modes, 
+            # but usually okay with selector loop.
+            pass
+
     async with bot:
         try:
             await bot.start(TOKEN)
+        except KeyboardInterrupt:
+            # Fallback if signal handler didn't catch (e.g. Windows sometimes)
+            await shutdown_handler("KeyboardInterrupt")
         finally:
-            print("🛑 Shutdown...")
-            # Stop all loggers
-            await asyncio.gather(*[l.stop() for l in state.loggers.values()])
-            await app_db.close()
+            # This block runs if bot.start() returns/errors
+            # We already handle shutdown above, but just in case
+            pass
 
 def run():
     if not TOKEN: 
         raise RuntimeError("No Token")
     try: 
+        if sys.platform == 'win32':
+            # Windows specific policy for signals
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         asyncio.run(main())
     except KeyboardInterrupt: 
         pass

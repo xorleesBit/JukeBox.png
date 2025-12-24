@@ -1,31 +1,63 @@
 import io
 import random
 from pydub import AudioSegment
+import numpy as np
 
-def reconstruct_user_audio(packets, chunk_start, chunk_end):
+def reconstruct_user_audio(packets, chunk_start, chunk_end, max_silence_s=2.0):
     FRAME_RATE = 48000
     CHANNELS = 2
     SAMPLE_WIDTH = 2
     BYTES_PER_SECOND = FRAME_RATE * CHANNELS * SAMPLE_WIDTH  # 192000
-    SILENCE_THRESHOLD = 0.1
-
+    
     packets.sort(key=lambda x: x[0])
     output = io.BytesIO()
-    last_audio_end_time = chunk_start
+    
+    if not packets:
+        return AudioSegment.silent(duration=0)
+    
+    # Pre-fill silence if the user started late relative to chunk start
+    # This maintains synchronization with other users in the mix
+    start_delay = packets[0][0] - chunk_start
+    if start_delay > 0.1: # Only if significant delay (>100ms)
+        # Cap initial silence to max_silence_s to save space/money?
+        # No, for MIX sync we must be accurate or cap it intelligently.
+        # But if we want to save Azure money, we trim start anyway in ChunkProcessor.
+        # So here we just align to the requested start.
+        silence_bytes = int(start_delay * BYTES_PER_SECOND)
+        silence_bytes -= (silence_bytes % 4)
+        if silence_bytes > 0:
+            output.write(b"\x00" * silence_bytes)
 
-    for ts, pcm in packets:
-        if not pcm:
-            continue
-        dur = len(pcm) / BYTES_PER_SECOND
-        gap = ts - last_audio_end_time
-        if gap > SILENCE_THRESHOLD:
-            silence = int(gap * BYTES_PER_SECOND)
-            silence -= (silence % 4)
-            if silence > 0:
-                output.write(b"\x00" * silence)
-            last_audio_end_time += gap
+    last_ts = packets[0][0]
+    # We track the "end of the last packet written" in timestamp domain
+    
+    for i, (ts, pcm) in enumerate(packets):
+        if not pcm: continue
+        
+        # Calculate gap from previous packet
+        # Initial iteration: gap is 0 (ts - last_ts)
+        if i > 0:
+            gap = ts - last_ts
+            
+            # Threshold: 60ms (3 packets) to ignore jitter
+            if gap > 0.06:
+                # Significant gap -> Insert Silence
+                silence_dur = gap
+                
+                # Squash logic (Optional, currently DISABLED for quality)
+                # if silence_dur > max_silence_s: silence_dur = max_silence_s
+                
+                silence_bytes = int(silence_dur * BYTES_PER_SECOND)
+                silence_bytes -= (silence_bytes % 4)
+                
+                if silence_bytes > 0:
+                    output.write(b"\x00" * silence_bytes)
+        
         output.write(pcm)
-        last_audio_end_time += dur
+        
+        # Update pointer
+        dur = len(pcm) / BYTES_PER_SECOND
+        last_ts = ts + dur
 
     raw = output.getvalue()
     if not raw:
@@ -34,63 +66,27 @@ def reconstruct_user_audio(packets, chunk_start, chunk_end):
     return AudioSegment(data=raw, sample_width=SAMPLE_WIDTH, frame_rate=FRAME_RATE, channels=CHANNELS)
 
 def apply_effect(audio: AudioSegment, effect_name: str) -> AudioSegment:
-    """
-    Applies audio effects: 'helium', 'demon', 'reverb'.
-    """
-    if not effect_name:
-        return audio
-        
+    if not effect_name: return audio
     effect_name = effect_name.lower()
     
     if effect_name == 'helium':
-        # Pitch up: Increase sample rate then override to original
-        # This speeds up audio and pitches it up. To keep duration, we'd need time stretching, 
-        # but simple pitch shift usually involves speed change or complex DSP.
-        # Simple "Chipmunk" effect: increase speed.
-        new_rate = int(audio.frame_rate * 1.5)
-        # set_frame_rate just changes the metadata (plays faster/higher)
-        # We want to RESAMPLE to that rate, effectively pitching up if we play at normal rate?
-        # No, pydub logic:
-        # spawn(override_frame_rate) -> plays faster.
-        # set_frame_rate -> resamples.
-        
-        # To pitch shift up without changing duration is hard.
-        # To pitch shift up AND speed up (Helium style) is easy:
-        # Just tell the player it has a lower sample rate? No.
-        
-        # Pydub way for simple pitch shift (affects speed):
         sound_with_altered_frame_rate = audio._spawn(audio.raw_data, overrides={
             "frame_rate": int(audio.frame_rate * 1.5)
         })
         return sound_with_altered_frame_rate.set_frame_rate(audio.frame_rate)
 
     elif effect_name == 'demon':
-        # Pitch down (affects speed - slows down)
         sound_with_altered_frame_rate = audio._spawn(audio.raw_data, overrides={
             "frame_rate": int(audio.frame_rate * 0.75)
         })
         return sound_with_altered_frame_rate.set_frame_rate(audio.frame_rate)
 
     elif effect_name == 'reverb':
-        # Simple delay based reverb
-        # Mix original with delayed versions
         delay_ms = 100
-        decay = 0.6
-        
-        # Create a delayed copy
-        delayed = audio - 5 # slightly quieter start? No, attenuation.
-        
-        # Pydub doesn't have easy delay. We prepend silence.
         silence = AudioSegment.silent(duration=delay_ms)
-        delayed_1 = silence + audio
-        delayed_1 = delayed_1 - 4 # Reduce volume by 4dB
-        
-        delayed_2 = AudioSegment.silent(duration=delay_ms*2) + audio
-        delayed_2 = delayed_2 - 8 # Reduce volume
-        
-        # Overlay. Note: this extends duration.
-        mixed = audio.overlay(delayed_1)
-        mixed = mixed.overlay(delayed_2)
+        delayed_1 = silence + audio - 4
+        delayed_2 = AudioSegment.silent(duration=delay_ms*2) + audio - 8
+        mixed = audio.overlay(delayed_1).overlay(delayed_2)
         return mixed
         
     return audio

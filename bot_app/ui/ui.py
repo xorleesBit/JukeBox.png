@@ -1,6 +1,7 @@
 import discord
 import time
 import datetime
+import json
 from bot_app.integrations.ai_client import ask_ai
 from bot_app.features.profile_manager import ProfileManager
 
@@ -534,10 +535,19 @@ class ProfileUserSelect(discord.ui.UserSelect):
         p = await self.db.get_profile(self.guild_id, u.id)
         if not p: return await i.response.send_message("Профиль не готов.", ephemeral=True)
         e = discord.Embed(title=f"Профиль: {u.display_name}", color=discord.Color.teal())
+        
         for k, v in p.items(): 
-            if v and isinstance(v, list): val = ", ".join(v)
-            elif isinstance(v, dict): val = str(v)
-            else: val = str(v)
+            val = str(v)
+            if isinstance(v, list):
+                # Achievements are list of dicts: [{'title': '...', ...}, ...]
+                if v and isinstance(v[0], dict) and 'title' in v[0]:
+                    lines = [f"- {item.get('title', '???')}" for item in v]
+                    val = "\n".join(lines)
+                else:
+                    val = ", ".join(str(x) for x in v)
+            elif isinstance(v, dict):
+                val = json.dumps(v, ensure_ascii=False, indent=2)
+            
             e.add_field(name=k.capitalize(), value=val[:1024], inline=False)
         await i.response.send_message(embed=e, ephemeral=True)
 

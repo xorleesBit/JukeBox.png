@@ -70,7 +70,7 @@ class VoiceLogger:
         self.sampler: PrankSampler | None = None
 
         self.processor = ChunkProcessor(on_audio_phrase=self._on_audio_phrase_from_worker_thread)
-        self.processor.on_after_chunk = lambda: asyncio.run_coroutine_threadsafe(self.update_dashboard(), self.bot.loop)
+        self.processor.on_after_chunk = lambda stats=None: asyncio.run_coroutine_threadsafe(self._handle_chunk_complete(stats), self.bot.loop)
 
         self.loop_task: asyncio.Task | None = None
         self.publish_task: asyncio.Task | None = None
@@ -256,7 +256,7 @@ class VoiceLogger:
             except asyncio.TimeoutError:
                 await self.rotate()
 
-    async def rotate(self):
+    async def rotate(self, priority=10):
         if not self.sink:
             return
 
@@ -268,9 +268,9 @@ class VoiceLogger:
             self.sink.start_time = now
 
         u_map = self._build_user_map(self.vc.channel.guild, data)
-        await self._enqueue_chunk(data, start, now, u_map)
+        await self._enqueue_chunk(data, start, now, u_map, priority)
 
-    async def _enqueue_chunk(self, data, start, end, u_map):
+    async def _enqueue_chunk(self, data, start, end, u_map, priority=10):
         if not self.base_dir:
             return
         
@@ -302,7 +302,7 @@ class VoiceLogger:
         if not filtered_data:
             return
 
-        job = ChunkJob(chunk_start=start, chunk_end=end, data=filtered_data, user_map=u_map, base_dir=self.base_dir)
+        job = ChunkJob(priority, chunk_start=start, chunk_end=end, data=filtered_data, user_map=u_map, base_dir=self.base_dir, guild_id=self.guild_id)
         self.processor.enqueue(job)
 
     def _build_user_map(self, guild: discord.Guild, data: dict) -> dict[int | str, str]:
@@ -317,6 +317,18 @@ class VoiceLogger:
             else:
                 u_map[u] = str(u)
         return u_map
+
+    async def _handle_chunk_complete(self, stats=None):
+        # Update Dashboard
+        await self.update_dashboard()
+        
+        # Update Speech Stats in DB (if stats provided)
+        if stats and isinstance(stats, tuple) and len(stats) == 2:
+            gid, speech_map = stats
+            if gid == self.guild_id and speech_map:
+                for uid, secs in speech_map.items():
+                    if isinstance(uid, int):
+                        await self.db.update_speech_stats(gid, uid, secs)
 
     async def _publish_loop(self):
         self.last_publish_at = time.time()
