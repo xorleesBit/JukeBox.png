@@ -51,15 +51,18 @@ class AIFunCog(commands.Cog):
         await msg.edit(content="🔥 Генерирую прожарку... (Монеты списаны)")
         
         sys_prompt = (
-            "Ты — ехидный стендап-комик. Твоя задача — жестко, но смешно 'прожарить' (roast) пользователя, "
-            "основываясь на истории его сообщений. Используй сленг, сарказм, иронию. "
-            "Не будь слишком токсичным, но будь метким. "
-            "Отвечай на русском языке."
+            "Ты — стендап-комик. Твоя задача — прожарить пользователя на основе его ЛОГОВ (истории сообщений).\n"
+            "Правила:\n"
+            "1. Не шути про никнейм, если в логах есть о чем поговорить.\n"
+            "2. Ищи странные фразы, повторы, глупые вопросы, капс или эмоции.\n"
+            "3. Если логов мало или они скучные — пошути над тем, что он 'молчун' или 'NPC'.\n"
+            "4. Будь едким, но не оскорбляй (roast, not bullying).\n"
+            "Отвечай на русском."
         )
         
-        user_prompt = f"Пользователь: {target.display_name}\nЛоги его общения:\n{logs}\n\nНапиши прожарку."
+        user_prompt = f"Пользователь: {target.display_name}\nЛоги:\n{logs}\n\nПрожарка:"
         
-        response = await ask_ai(user_prompt, system_prompt)
+        response = await ask_ai(user_prompt, sys_prompt)
         
         embed = discord.Embed(title=f"🔥 Roast: {target.display_name}", description=response, color=discord.Color.dark_orange())
         embed.set_footer(text=f"Заказал: {ctx.author.display_name} | -{cost} монет")
@@ -86,15 +89,25 @@ class AIFunCog(commands.Cog):
         lc = LogContext(ctx.guild.id, ctx.guild.name)
         logs = lc.get_user_logs(target.display_name, limit=100)
         
+        if not logs or len(logs) < 50:
+            return await msg.edit(content="❌ Недостаточно данных для шутки. Пусть пользователь сначала поговорит.")
+            
         if not bypass:
             await self.bot.db.update_balance(ctx.guild.id, ctx.author.id, -cost)
 
-        sys_prompt = "Ты веселый друг. Придумай добрую шутку или анекдот про пользователя, используя контекст его фраз."
-        user_prompt = f"Пользователь: {target.display_name}\nЛоги:\n{logs}\n\nШутка:"
+        sys_prompt = (
+            "Ты — добрый и остроумный друг. Твоя задача — придумать смешную, но добрую шутку или анекдот про пользователя, основываясь на теме его разговоров.\n"
+            "Правила:\n"
+            "1. Не шути про никнейм. Анализируй текст его сообщений.\n"
+            "2. Найди тему разговора (игры, фильмы, учеба) и пошути на эту тему.\n"
+            "3. Если контекст непонятен, придумай общую шутку про Discord или геймеров.\n"
+            "4. Важно: Шутка должна быть позитивной. Без сарказма и негатива."
+        )
+        user_prompt = f"Пользователь: {target.display_name}\nЕго реплики:\n{logs}\n\nШутка:"
         
         response = await ask_ai(user_prompt, sys_prompt)
         
-        embed = discord.Embed(title=f"🤡 Шутка: {target.display_name}", description=response, color=discord.Color.gold())
+        embed = discord.Embed(title=f"🤡 Шутка про {target.display_name}", description=response, color=discord.Color.gold())
         embed.set_footer(text=f"Цена: {cost} монет")
         
         await msg.delete()
@@ -146,8 +159,14 @@ class AIFunCog(commands.Cog):
         await msg.edit(content="🧠 Генерирую Итоги Месяца...")
         
         prompt = (
-            f"Вот отчеты по неделям за этот месяц для сервера {ctx.guild.name}:\n{full_text}\n\n"
-            "Сделай ФИНАЛЬНЫЙ дайджест месяца. Выдели главные события, героев месяца и общую атмосферу."
+            f"Проанализируй отчеты сервера '{ctx.guild.name}' и напиши ИТОГОВЫЙ ДАЙДЖЕСТ месяца.\n"
+            "Входные данные (Markdown отчеты по неделям):\n" + full_text + "\n\n"
+            "ЗАДАЧА:\n"
+            "1. Кратко перескажи главные события (что обсуждали, во что играли).\n"
+            "2. Выдели 'Героев месяца' (кто больше всех говорил или шутил), основываясь ТОЛЬКО на тексте.\n"
+            "3. Стиль: Легкий, юмористический, как в молодежном журнале или блоге.\n"
+            "4. ВАЖНО: Не выдумывай события. Если данных нет — так и напиши ('Месяц был тихим').\n"
+            "Ответ в Markdown."
         )
         
         res = await ask_ai(prompt)
