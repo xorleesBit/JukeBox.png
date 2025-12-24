@@ -100,5 +100,66 @@ class AIFunCog(commands.Cog):
         await msg.delete()
         await ctx.send(embed=embed)
 
+    @commands.command(name="month_recap")
+    async def cmd_month_recap(self, ctx):
+        """AI отчет за текущий месяц (на основе архивов)."""
+        cost = 1000
+        from bot_app.core.dev_manager import dev_manager
+        
+        if not dev_manager.is_god_mode(ctx.author.id):
+            bal = await self.bot.db.get_balance(ctx.guild.id, ctx.author.id)
+            if bal < cost: return await ctx.send(f"❌ Цена: {cost} монет.")
+            await self.bot.db.update_balance(ctx.guild.id, ctx.author.id, -cost)
+
+        msg = await ctx.send("📅 Анализирую архивы месяца...")
+        
+        # Find summaries
+        import os
+        from bot_app.core.config import LOG_DIR
+        from bot_app.core.utils import safe_dirname
+        
+        g_dir = safe_dirname(ctx.guild.name)
+        archive_path = os.path.join(LOG_DIR, "archives", g_dir)
+        
+        if not os.path.exists(archive_path):
+            return await msg.edit(content="❌ Нет архивов.")
+            
+        # Filter current month
+        # Filename: data-YYYY-MM-DD_to_... .txt
+        import datetime
+        now_str = datetime.datetime.now().strftime("%Y-%m") # 2025-12
+        
+        summaries = []
+        for f in os.listdir(archive_path):
+            if f.endswith("_summary.md") and now_str in f:
+                try:
+                    with open(os.path.join(archive_path, f), "r", encoding="utf-8") as md:
+                        summaries.append(md.read())
+                except: pass
+                
+        if not summaries:
+            return await msg.edit(content="❌ Нет данных за этот месяц (возможно, архивация еще не прошла).")
+            
+        full_text = "\n\n".join(summaries)
+        
+        # Send to AI
+        await msg.edit(content="🧠 Генерирую Итоги Месяца...")
+        
+        prompt = (
+            f"Вот отчеты по неделям за этот месяц для сервера {ctx.guild.name}:\n{full_text}\n\n"
+            "Сделай ФИНАЛЬНЫЙ дайджест месяца. Выдели главные события, героев месяца и общую атмосферу."
+        )
+        
+        res = await ask_ai(prompt)
+        
+        # Save or Send? Too big for embed?
+        # Send as file + short embed
+        with open("month_recap.md", "w", encoding="utf-8") as f:
+            f.write(res)
+            
+        await msg.delete()
+        await ctx.send(f"🏆 **Итоги Месяца**", file=discord.File("month_recap.md"))
+        os.remove("month_recap.md")
+
 async def setup(bot):
     await bot.add_cog(AIFunCog(bot))

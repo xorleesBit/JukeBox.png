@@ -160,3 +160,8 @@ class ControlPanelView(discord.ui.View):
         logger = self.app.loggers.get(self.guild_id)
         if not logger: return await interaction.response.send_message("Логгер не запущен.", ephemeral=True)
         await interaction.response.send_message("▶️ **Плеер**", view=PlaybackView(logger), ephemeral=True)
+
+    @discord.ui.button(label="Архивы", style=discord.ButtonStyle.secondary, emoji="📂", row=2, custom_id="cp:archives")
+    async def btn_archives(self, interaction: discord.Interaction, _):
+        from bot_app.ui.archive_menu import ArchiveView # Lazy import
+        await interaction.response.send_message("📂 **Архивы Логов**", view=ArchiveView(self.guild_id), ephemeral=True)
