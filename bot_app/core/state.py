@@ -7,6 +7,8 @@ if TYPE_CHECKING:
     from bot_app.core.app_db import AppDB
     import discord
 
+from bot_app.core.dev_manager import dev_manager
+
 # Global State Containers
 loggers: dict[int, "VoiceLogger"] = {}
 settings_cache: dict[int, "RuntimeSettings"] = {}
