@@ -268,9 +268,13 @@ class VoiceLogger:
             self.sink.start_time = now
 
         u_map = self._build_user_map(self.vc.channel.guild, data)
-        await self._enqueue_chunk(data, start, now, u_map, priority)
+        
+        # Read STT provider from settings (default to azure)
+        provider = self.settings.get_string("stt_provider") or "azure"
+        
+        await self._enqueue_chunk(data, start, now, u_map, priority, provider)
 
-    async def _enqueue_chunk(self, data, start, end, u_map, priority=10):
+    async def _enqueue_chunk(self, data, start, end, u_map, priority=10, provider="azure"):
         if not self.base_dir:
             return
         
@@ -302,7 +306,7 @@ class VoiceLogger:
         if not filtered_data:
             return
 
-        job = ChunkJob(priority, chunk_start=start, chunk_end=end, data=filtered_data, user_map=u_map, base_dir=self.base_dir, guild_id=self.guild_id)
+        job = ChunkJob(priority, chunk_start=start, chunk_end=end, data=filtered_data, user_map=u_map, base_dir=self.base_dir, guild_id=self.guild_id, stt_provider=provider)
         self.processor.enqueue(job)
 
     def _build_user_map(self, guild: discord.Guild, data: dict) -> dict[int | str, str]:

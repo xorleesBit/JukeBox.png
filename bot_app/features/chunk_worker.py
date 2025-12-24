@@ -12,6 +12,7 @@ from pydub import AudioSegment
 from bot_app.core.config import TRANSCRIBE_WORKERS
 from bot_app.audio.audio_utils import reconstruct_user_audio
 from bot_app.integrations.azure_stt import transcribe_file_azure_sentences
+from bot_app.integrations.assembly_stt import transcribe_file_assembly_sentences
 from bot_app.core.log_store import LogStore
 from bot_app.audio.vad import vad
 
@@ -26,6 +27,7 @@ class ChunkJob:
     user_map: dict = field(compare=False)
     base_dir: str = field(compare=False)
     guild_id: int = field(compare=False)
+    stt_provider: str = field(compare=False, default="azure") # Added provider choice
 
 class ChunkProcessor:
     def __init__(self, on_audio_phrase=None, db=None):
@@ -187,12 +189,10 @@ class ChunkProcessor:
                 speech_stats = {} # uid -> seconds
 
                 def transcribe_one(wav_path: str, user_name: str):
-                    # We pass the full job duration context? Or trimmed?
-                    # Transcribe usually takes absolute TS. 
-                    # If we cut file, timestamps in subtitles might shift if we use 0-based.
-                    # Our transcribe function takes 'chunk_start'. We should pass 'trim_start' 
-                    # so that absolute timestamps remain correct!
-                    return transcribe_file_azure_sentences(wav_path, trim_start, user_name, trimmed_duration)
+                    if job.stt_provider == "assembly":
+                        return transcribe_file_assembly_sentences(wav_path, trim_start, user_name, trimmed_duration)
+                    else:
+                        return transcribe_file_azure_sentences(wav_path, trim_start, user_name, trimmed_duration)
 
                 with ThreadPoolExecutor(max_workers=max(1, TRANSCRIBE_WORKERS)) as pool:
                     for user_id, packets in loaded_data.items():

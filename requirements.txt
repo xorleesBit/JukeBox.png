@@ -9,3 +9,4 @@ audioop-lts
 onnxruntime
 numpy
 psutil
+assemblyai
