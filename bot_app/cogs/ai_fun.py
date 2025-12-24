@@ -38,10 +38,10 @@ class AIFunCog(commands.Cog):
         
         # 1. Collect Logs
         lc = LogContext(ctx.guild.id, ctx.guild.name)
-        logs = lc.get_user_logs(target.display_name, limit=150)
+        logs = lc.get_user_logs(target.display_name, limit=150, days_lookback=5)
         
         if not logs or len(logs) < 50:
-             return await msg.edit(content="❌ Слишком мало данных в логах (нужно общение в голосе или чате за последние 24ч).")
+             return await msg.edit(content="❌ Слишком мало данных в логах (нужно общение в голосе или чате за последние 5 дней).")
 
         # 2. Charge
         if not bypass:
@@ -87,10 +87,10 @@ class AIFunCog(commands.Cog):
         msg = await ctx.send(f"🤖 Придумываю шутку про {target.display_name}...")
         
         lc = LogContext(ctx.guild.id, ctx.guild.name)
-        logs = lc.get_user_logs(target.display_name, limit=100)
+        logs = lc.get_user_logs(target.display_name, limit=100, days_lookback=5)
         
         if not logs or len(logs) < 50:
-            return await msg.edit(content="❌ Недостаточно данных для шутки. Пусть пользователь сначала поговорит.")
+            return await msg.edit(content="❌ Недостаточно данных для шутки (минимум общения за 5 дней).")
             
         if not bypass:
             await self.bot.db.update_balance(ctx.guild.id, ctx.author.id, -cost)

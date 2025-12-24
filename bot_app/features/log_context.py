@@ -11,7 +11,7 @@ class LogContext:
         # We need to scan LOG_DIR/DATE/GUILD_NAME/YYYY-MM-DD.events.log
         self.base_dir = LOG_DIR
 
-    def get_user_logs(self, user_name: str, limit: int = 200, days_lookback: int = 1) -> str:
+    def get_user_logs(self, user_name: str, limit: int = 200, days_lookback: int = 5) -> str:
         """
         Retrieves last 'limit' lines associated with 'user_name' from logs.
         Scans today and previous 'days_lookback'.
@@ -90,6 +90,31 @@ class LogContext:
             if len(lines_found) >= limit:
                 break
         
+        # 2. ALSO check archives
+        if len(lines_found) < limit:
+            archive_guild_dir = os.path.join(self.base_dir, "archives", self.guild_dir_name)
+            if os.path.exists(archive_guild_dir):
+                # Archives are named data-START_to_END.txt
+                # We sort them to find newest archives first
+                arch_files = sorted([f for f in os.listdir(archive_guild_dir) if f.endswith(".txt")], reverse=True)
+                
+                for arch_f in arch_files:
+                    if len(lines_found) >= limit: break
+                    
+                    try:
+                        with open(os.path.join(archive_guild_dir, arch_f), "r", encoding="utf-8", errors='ignore') as f:
+                            # Archive files are plain text, not JSONL.
+                            # Format: [HH:MM:SS] ICON User: Text
+                            # But wait, LogArchiver prepends "--- DATE: ... ---"
+                            # We need to parse this.
+                            content = f.readlines()
+                            for line in reversed(content):
+                                if user_name_lower in line.lower() and ":" in line:
+                                    # Very simple check for archive text
+                                    lines_found.append(line.strip())
+                                    if len(lines_found) >= limit: break
+                    except: continue
+
         # Reverse back to chronological order
         lines_found.reverse()
         return "\n".join(lines_found)
