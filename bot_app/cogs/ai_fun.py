@@ -38,7 +38,7 @@ class AIFunCog(commands.Cog):
         
         # 1. Collect Logs
         lc = LogContext(ctx.guild.id, ctx.guild.name)
-        logs = lc.get_user_logs(target.display_name, limit=150, days_lookback=5)
+        logs = lc.get_user_logs(target, limit=150, days_lookback=5)
         
         if not logs or len(logs) < 50:
              return await msg.edit(content="❌ Слишком мало данных в логах (нужно общение в голосе или чате за последние 5 дней).")

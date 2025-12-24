@@ -11,14 +11,38 @@ class LogContext:
         # We need to scan LOG_DIR/DATE/GUILD_NAME/YYYY-MM-DD.events.log
         self.base_dir = LOG_DIR
 
-    def get_user_logs(self, user_name: str, limit: int = 200, days_lookback: int = 5) -> str:
+    def get_user_logs(self, target_user, limit: int = 200, days_lookback: int = 5) -> str:
         """
-        Retrieves last 'limit' lines associated with 'user_name' from logs.
+        Retrieves last 'limit' lines associated with 'target_user' from logs.
         Scans today and previous 'days_lookback'.
+        target_user can be Member object or string (legacy).
         Returns formatted text block.
         """
         lines_found = []
-        user_name_lower = user_name.lower()
+        
+        # Determine search variations
+        search_terms = set()
+        if hasattr(target_user, 'name'):
+            # It's a Discord Member/User
+            search_terms.add(target_user.name.lower())
+            search_terms.add(target_user.display_name.lower())
+            if hasattr(target_user, 'global_name') and target_user.global_name:
+                search_terms.add(target_user.global_name.lower())
+        else:
+            # It's a string
+            search_terms.add(str(target_user).lower())
+            
+        # Helper check
+        def matches(text):
+            t_lower = text.lower()
+            for term in search_terms:
+                # Check "Term: message" format
+                if t_lower.startswith(term + ":"):
+                    return True, term
+                # Check inclusion for system events
+                if term in t_lower:
+                    return True, None
+            return False, None
         
         # Scan dates in reverse
         now = datetime.datetime.now()
@@ -61,24 +85,20 @@ class LogContext:
                         data = json.loads(line)
                         text = data.get("text", "")
                         
-                        # Check if this log belongs to user.
-                        # VoiceLogger format: "UserName: message" or "UserName joined."
-                        # We want what they SAID mainly.
-                        # STT format: "UserName: phrase"
+                        is_match, matched_term = matches(text)
                         
-                        if text.lower().startswith(user_name_lower + ":"):
-                            # Extracted speech/text
+                        if is_match:
                             ts = float(data.get("ts", 0))
                             fmt_time = format_abs_ts(ts)
-                            clean_text = text[len(user_name)+1:].strip() # remove "Name:"
-                            lines_found.append(f"[{date_str} {fmt_time}] {clean_text}")
                             
-                        elif user_name_lower in text.lower():
-                            # Events like join/leave or mention
-                            # Maybe exclude system events for better roast context?
-                            # Let's include them but marked
-                            # lines_found.append(f"[Event] {text}")
-                            pass
+                            if matched_term and text.lower().startswith(matched_term + ":"):
+                                # Extracted speech
+                                clean_text = text[len(matched_term)+1:].strip()
+                                lines_found.append(f"[{date_str} {fmt_time}] {clean_text}")
+                            else:
+                                # System event or mention
+                                # lines_found.append(f"[Event] {text}")
+                                pass
                             
                     except: continue
                     
@@ -103,14 +123,10 @@ class LogContext:
                     
                     try:
                         with open(os.path.join(archive_guild_dir, arch_f), "r", encoding="utf-8", errors='ignore') as f:
-                            # Archive files are plain text, not JSONL.
-                            # Format: [HH:MM:SS] ICON User: Text
-                            # But wait, LogArchiver prepends "--- DATE: ... ---"
-                            # We need to parse this.
                             content = f.readlines()
                             for line in reversed(content):
-                                if user_name_lower in line.lower() and ":" in line:
-                                    # Very simple check for archive text
+                                is_match, _ = matches(line)
+                                if is_match and ":" in line:
                                     lines_found.append(line.strip())
                                     if len(lines_found) >= limit: break
                     except: continue
