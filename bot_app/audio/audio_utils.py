@@ -65,6 +65,60 @@ def reconstruct_user_audio(packets, chunk_start, chunk_end, max_silence_s=2.0):
 
     return AudioSegment(data=raw, sample_width=SAMPLE_WIDTH, frame_rate=FRAME_RATE, channels=CHANNELS)
 
+def get_speech_segments(packets: list, gap_threshold: float = 1.5) -> list:
+    """
+    Clusters packets into segments based on time gaps.
+    packets: list of (ts, pcm)
+    Returns: list of {'start': float, 'packets': list, 'end': float}
+    """
+    if not packets: return []
+    # Ensure sorted
+    packets.sort(key=lambda x: x[0])
+    
+    segments = []
+    current_packets = []
+    
+    # Constants for duration calc
+    FRAME_RATE = 48000
+    CHANNELS = 2
+    SAMPLE_WIDTH = 2
+    BYTES_PER_SECOND = FRAME_RATE * CHANNELS * SAMPLE_WIDTH # 192000
+
+    last_end_ts = -1.0
+    
+    for ts, pcm in packets:
+        duration = len(pcm) / BYTES_PER_SECOND
+        end_ts = ts + duration
+        
+        if last_end_ts < 0:
+            current_packets.append((ts, pcm))
+            last_end_ts = end_ts
+            continue
+            
+        gap = ts - last_end_ts
+        if gap > gap_threshold:
+            # Close current segment
+            if current_packets:
+                segments.append({
+                    'start': current_packets[0][0],
+                    'end': last_end_ts,
+                    'packets': current_packets
+                })
+            current_packets = [(ts, pcm)]
+        else:
+            current_packets.append((ts, pcm))
+            
+        last_end_ts = end_ts
+        
+    if current_packets:
+        segments.append({
+            'start': current_packets[0][0],
+            'end': last_end_ts,
+            'packets': current_packets
+        })
+        
+    return segments
+
 def apply_effect(audio: AudioSegment, effect_name: str) -> AudioSegment:
     if not effect_name: return audio
     effect_name = effect_name.lower()
