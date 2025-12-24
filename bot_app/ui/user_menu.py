@@ -37,6 +37,7 @@ class UserMenuView(discord.ui.View):
             discord.SelectOption(label="Профиль", emoji="📜", value="profile", description="Статистика, уровень, рейтинг"),
             discord.SelectOption(label="Экономика", emoji="💳", value="economy", description="Баланс, ежедневные бонусы, переводы"),
             discord.SelectOption(label="Саунд-Пад", emoji="🎹", value="soundpad", description="Ваши звуки и плеер"),
+            discord.SelectOption(label="AI & Fun", emoji="🤖", value="fun", description="Шутки, прожарка, аватарки"),
             discord.SelectOption(label="Утилиты", emoji="🛠️", value="utils", description="AFK, Напоминания"),
         ])
         
@@ -45,6 +46,7 @@ class UserMenuView(discord.ui.View):
             if val == "profile": await self._show_profile(interaction)
             elif val == "economy": await self._show_economy(interaction)
             elif val == "soundpad": await self._show_soundpad(interaction)
+            elif val == "fun": await self._show_fun(interaction)
             elif val == "utils": await self._show_utils(interaction)
         
         select.callback = callback
@@ -177,6 +179,57 @@ class UserMenuView(discord.ui.View):
         
         e = discord.Embed(title="🛠️ Утилиты", color=discord.Color.dark_grey())
         e.description = "Быстрый доступ к инструментам."
+        await interaction.response.edit_message(embed=e, view=self)
+
+    # --- AI & Fun ---
+    async def _show_fun(self, interaction: discord.Interaction):
+        self.clear_items()
+        
+        # Roast Button
+        btn_roast = discord.ui.Button(label="🔥 Roast Me", style=discord.ButtonStyle.danger)
+        async def roast_cb(itx: discord.Interaction):
+            # Invoke command via text? Or recreate logic.
+            # Recreating logic is safer for UI.
+            # Or just instruct user.
+            # Let's call the cog method if possible or just use text command instructions for complex args.
+            # Roast target=Self is easy.
+            from bot_app.cogs.ai_fun import AIFunCog
+            cog = self.bot.get_cog("AIFunCog")
+            if cog:
+                # We need a context-like object.
+                # Constructing a FakeContext is hard.
+                # Easier: Just send instruction or simple implementation.
+                await itx.response.send_message("Для прожарки напишите `!roast @user` (или просто `!roast` для себя).", ephemeral=True)
+        btn_roast.callback = roast_cb
+        self.add_item(btn_roast)
+
+        # Joke Button
+        btn_joke = discord.ui.Button(label="🤡 Joke", style=discord.ButtonStyle.success)
+        async def joke_cb(itx):
+            await itx.response.send_message("Напишите `!joke @user`.", ephemeral=True)
+        btn_joke.callback = joke_cb
+        self.add_item(btn_joke)
+        
+        # Avatar
+        btn_av = discord.ui.Button(label="📸 Avatar", style=discord.ButtonStyle.secondary)
+        async def av_cb(itx):
+            embed = discord.Embed(title=f"Ваш аватар", color=discord.Color.blurple())
+            embed.set_image(url=self.user.display_avatar.url)
+            await itx.response.send_message(embed=embed, ephemeral=True)
+        btn_av.callback = av_cb
+        self.add_item(btn_av)
+
+        self._add_back_button()
+        
+        e = discord.Embed(title="🤖 AI & Fun", color=discord.Color.pink())
+        e.description = (
+            "**Команды:**\n"
+            "`!roast @user` — AI прожарка\n"
+            "`!joke @user` — AI шутка\n"
+            "`!poll \"Вопрос\" \"1\" \"2\"` — Опрос\n"
+            "`!server` — Инфо о сервере\n"
+            "`!month_recap` — Итоги месяца (Дорого!)"
+        )
         await interaction.response.edit_message(embed=e, view=self)
 
     # --- Helpers ---

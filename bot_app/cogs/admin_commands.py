@@ -14,20 +14,20 @@ class AdminCommands(commands.Cog):
         self.db = bot.db
         self.loggers = bot.loggers
 
-    @commands.command(name="setup_panel")
+    @commands.command(name="setup_panel", hidden=True)
     @commands.has_permissions(administrator=True)
     async def cmd_setup_panel(self, ctx):
         if hasattr(self.bot, 'ensure_panel_func'):
             await self.bot.ensure_panel_func(ctx.guild, force_create_channel=True)
             await ctx.send("Панель пересоздана.", delete_after=5)
 
-    @commands.command(name="panel")
+    @commands.command(name="panel", hidden=True)
     @commands.has_permissions(administrator=True)
     async def cmd_panel_refresh(self, ctx):
         if hasattr(self.bot, 'ensure_panel_func'):
             await self.bot.ensure_panel_func(ctx.guild, force_create_channel=False)
 
-    @commands.command(name="delete_all_phrases")
+    @commands.command(name="delete_all_phrases", hidden=True)
     @commands.has_permissions(administrator=True)
     async def cmd_delete_all_phrases(self, ctx):
         """Удаляет ВСЕ фразы сервера, КРОМЕ избранных."""
@@ -54,7 +54,7 @@ class AdminCommands(commands.Cog):
         
         await ctx.send("✅ База очищена (избранное сохранено). Файлы останутся до очистки мусора.", delete_after=10)
 
-    @commands.command(name="get_logs")
+    @commands.command(name="get_logs", hidden=True)
     @commands.has_permissions(administrator=True)
     async def cmd_get_logs(self, ctx, date_start: str, date_end: str = None):
         """
@@ -91,7 +91,7 @@ class AdminCommands(commands.Cog):
             
         await ctx.send(f"📂 Найдено архивов: {len(found_files)}", files=found_files[:10])
 
-    @commands.command(name="cut")
+    @commands.command(name="cut", hidden=True)
     @commands.has_permissions(administrator=True)
     async def cmd_cut(self, ctx):
         """✂️ Экстренно завершить запись текущего фрагмента и отправить на транскрибацию (Высший приоритет)."""
