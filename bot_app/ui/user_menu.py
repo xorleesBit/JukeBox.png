@@ -52,6 +52,13 @@ class UserMenuView(discord.ui.View):
         select.callback = callback
         self.add_item(select)
 
+        # Close Button
+        btn_close = discord.ui.Button(label="Закрыть меню", style=discord.ButtonStyle.danger, row=4)
+        async def close_cb(itx: discord.Interaction):
+            await itx.message.delete()
+        btn_close.callback = close_cb
+        self.add_item(btn_close)
+
     async def _get_main_embed(self, guild_id):
         u_data = await self.db.get_user(guild_id, self.user.id)
         bal = u_data['balance'] if u_data else 0

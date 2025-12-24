@@ -99,9 +99,11 @@ class AppDB:
         await self.pool.execute(sql.UPDATE_USER_LEVEL, guild_id, user_id)
 
         if words_list:
+            # Batch optimization for word stats
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
-                    for w in words_list:
+                    # Limit to 50 words per phrase to prevent DB flood
+                    for w in words_list[:50]:
                         w = w.lower().strip()[:50]
                         if not w: continue
                         await conn.execute(sql.UPSERT_WORD_STAT, guild_id, user_id, w)

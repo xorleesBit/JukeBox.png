@@ -99,7 +99,7 @@ class LogArchiver:
                         out.write(f"\n--- DATE: {date} ---\n")
                         try:
                             with open(fpath, "r", encoding="utf-8", errors='ignore') as src:
-                                out.write(src.read())
+                                shutil.copyfileobj(src, out)
                         except: pass
                 logger.info(f"Archived {g_name}: {merged_filename}")
             except Exception as e:

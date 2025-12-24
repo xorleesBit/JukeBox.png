@@ -37,6 +37,12 @@ class RuntimeSettings:
             return bool(val)
         return default
 
+    def get_string(self, key: str, default: str = "") -> str:
+        val = self._cache.get(key)
+        if val is not None:
+            return str(val)
+        return default
+
     def set_int(self, key: str, value: int):
         self._cache[key] = int(value)
         asyncio.create_task(self.db.set_config_value(self.guild_id, key, int(value)))
@@ -48,3 +54,7 @@ class RuntimeSettings:
     def set_bool(self, key: str, value: bool):
         self._cache[key] = bool(value)
         asyncio.create_task(self.db.set_config_value(self.guild_id, key, bool(value)))
+
+    def set_string(self, key: str, value: str):
+        self._cache[key] = str(value)
+        asyncio.create_task(self.db.set_config_value(self.guild_id, key, str(value)))

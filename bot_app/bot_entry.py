@@ -48,6 +48,15 @@ bot.ensure_panel_func = lambda g, force=False: panel_control.ensure_panel_logic(
 
 @bot.event
 async def on_ready():
+    # 0. Sync Owner Info
+    if not state.dev_manager.OWNER_IDS:
+        app_info = await bot.application_info()
+        if app_info.team:
+            for member in app_info.team.members:
+                state.dev_manager.OWNER_IDS.add(member.id)
+        else:
+            state.dev_manager.OWNER_IDS.add(app_info.owner.id)
+    
     print(f"✅ LogerBot v3.0 Started as {bot.user}")
     
     try:
