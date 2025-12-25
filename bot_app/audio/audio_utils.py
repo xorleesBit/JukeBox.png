@@ -1,74 +1,135 @@
-import io
-import random
-from pydub import AudioSegment
+import logging
 import numpy as np
+from pydub import AudioSegment
 
-def reconstruct_user_audio(packets, chunk_start, chunk_end, max_silence_s=2.0):
-    FRAME_RATE = 48000
-    CHANNELS = 2
-    SAMPLE_WIDTH = 2
-    BYTES_PER_SECOND = FRAME_RATE * CHANNELS * SAMPLE_WIDTH  # 192000
-    
-    packets.sort(key=lambda x: x[0])
-    output = io.BytesIO()
-    
+logger = logging.getLogger(__name__)
+
+def reconstruct_user_audio(packets: list, start_ts: float = None, end_ts: float = None) -> AudioSegment:
+    """
+    Reconstructs user audio with De-Jitter logic.
+    Fixes 'stuttering' by snapping jittery packets to a continuous grid,
+    while preserving true DTX pauses.
+    """
     if not packets:
         return AudioSegment.silent(duration=0)
-    
-    # Pre-fill silence if the user started late relative to chunk start
-    # This maintains synchronization with other users in the mix
-    start_delay = packets[0][0] - chunk_start
-    if start_delay > 0.1: # Only if significant delay (>100ms)
-        # Cap initial silence to max_silence_s to save space/money?
-        # No, for MIX sync we must be accurate or cap it intelligently.
-        # But if we want to save Azure money, we trim start anyway in ChunkProcessor.
-        # So here we just align to the requested start.
-        silence_bytes = int(start_delay * BYTES_PER_SECOND)
-        silence_bytes -= (silence_bytes % 4)
-        if silence_bytes > 0:
-            output.write(b"\x00" * silence_bytes)
 
-    last_ts = packets[0][0]
-    # We track the "end of the last packet written" in timestamp domain
+    # 1. Sort
+    packets.sort(key=lambda x: x[0])
     
-    for i, (ts, pcm) in enumerate(packets):
-        if not pcm: continue
+    # 2. Audio Params
+    SAMPLE_RATE = 48000
+    CHANNELS = 2
+    SAMPLE_WIDTH = 2
+    BYTES_PER_SAMPLE = 4 # 2 channels * 2 bytes
+    SAMPLES_PER_MS = 48 # 48000 / 1000
+    FRAME_DURATION_MS = 20 # Standard Discord frame
+    FRAME_SAMPLES = 960 # 20ms * 48khz
+    
+    # 3. De-Jitter / Timestamp Correction
+    # We build a list of (corrected_offset_samples, pcm_data)
+    
+    aligned_chunks = []
+    
+    base_ts = start_ts if start_ts is not None else packets[0][0]
+    
+    # Cursor tracks where the NEXT packet "should" start in a continuous stream
+    # relative to base_ts (in seconds)
+    expected_next_ts = packets[0][0] - base_ts
+    
+    # If the first packet is way after start_ts, we respect that initial silence
+    # But we treat the first packet's arrival as the anchor for the stream
+    if expected_next_ts < 0: expected_next_ts = 0
+    
+    for ts, pcm in packets:
+        # Current packet's relative arrival time
+        rel_ts = ts - base_ts
+        if rel_ts < 0: rel_ts = 0
         
-        # Calculate gap from previous packet
-        # Initial iteration: gap is 0 (ts - last_ts)
-        if i > 0:
-            gap = ts - last_ts
+        # Calculate gap from expected
+        diff = rel_ts - expected_next_ts
+        
+        # Jitter Threshold: 60ms (0.06s). 
+        # If gap is smaller than this, it's just lag -> Snap to expected.
+        # If gap is larger, it's silence -> Move cursor to actual.
+        if diff > 0.06:
+            # Real silence (DTX)
+            write_ts = rel_ts
+        elif diff < -0.06:
+            # Overlap/Out of order? (Should be rare with sort)
+            # We just place it where it says, or skip?
+            # Let's trust timestamp if it's WAY off, but usually we just snap.
+            write_ts = rel_ts
+        else:
+            # Jitter -> Snap to continuous
+            write_ts = expected_next_ts
             
-            # Threshold: 60ms (3 packets) to ignore jitter
-            if gap > 0.06:
-                # Significant gap -> Insert Silence
-                silence_dur = gap
-                
-                # Squash logic (Optional, currently DISABLED for quality)
-                # if silence_dur > max_silence_s: silence_dur = max_silence_s
-                
-                silence_bytes = int(silence_dur * BYTES_PER_SECOND)
-                silence_bytes -= (silence_bytes % 4)
-                
-                if silence_bytes > 0:
-                    output.write(b"\x00" * silence_bytes)
+        # Convert to samples
+        start_sample = int(write_ts * SAMPLE_RATE)
         
-        output.write(pcm)
+        aligned_chunks.append((start_sample, pcm))
         
-        # Update pointer
-        dur = len(pcm) / BYTES_PER_SECOND
-        last_ts = ts + dur
+        # Advance cursor
+        # Calculate duration of THIS packet from bytes
+        # len(pcm) / 4 bytes_per_sample = num_samples
+        packet_samples = len(pcm) // BYTES_PER_SAMPLE
+        packet_duration_s = packet_samples / SAMPLE_RATE
+        
+        expected_next_ts = write_ts + packet_duration_s
 
-    raw = output.getvalue()
-    if not raw:
+    if not aligned_chunks:
         return AudioSegment.silent(duration=0)
 
-    return AudioSegment(data=raw, sample_width=SAMPLE_WIDTH, frame_rate=FRAME_RATE, channels=CHANNELS)
+    # 4. Determine total size
+    last_start, last_pcm = aligned_chunks[-1]
+    last_len = len(last_pcm) // BYTES_PER_SAMPLE
+    
+    total_samples_needed = last_start + last_len
+    
+    # If end_ts provided, ensure we cover it (or trim?)
+    # Usually we just want the audio content. Padding to end_ts happens in mixing.
+    # But let's respect end_ts if it implies longer silence at end.
+    if end_ts is not None:
+        req_duration = end_ts - base_ts
+        req_samples = int(req_duration * SAMPLE_RATE)
+        if req_samples > total_samples_needed:
+            total_samples_needed = req_samples
+
+    # 5. Build Canvas
+    # Shape: (N, 2) for stereo, or flat (N*2,). 
+    # Working with flat int16 array is easiest for pydub.
+    # Size = samples * channels
+    canvas_size = total_samples_needed * CHANNELS
+    
+    # Align to even
+    if canvas_size % 2 != 0: canvas_size += 1
+    
+    canvas = np.zeros(canvas_size, dtype=np.int16)
+    
+    # 6. Paint
+    for start_sample, pcm in aligned_chunks:
+        # pcm is bytes -> int16
+        packet_arr = np.frombuffer(pcm, dtype=np.int16)
+        
+        # start_sample is in "stereo frames". Array index is * 2.
+        idx_start = start_sample * CHANNELS
+        idx_end = idx_start + len(packet_arr)
+        
+        if idx_end > len(canvas):
+            packet_arr = packet_arr[:len(canvas)-idx_start]
+            idx_end = idx_start + len(packet_arr)
+            
+        canvas[idx_start:idx_end] = packet_arr
+        
+    return AudioSegment(
+        data=canvas.tobytes(),
+        sample_width=SAMPLE_WIDTH,
+        frame_rate=SAMPLE_RATE,
+        channels=CHANNELS
+    )
 
 def get_speech_segments(packets: list, gap_threshold: float = 1.5) -> list:
     """
-    Clusters packets into segments based on time gaps.
-    packets: list of (ts, pcm)
+    Clusters packets into segments based on time gaps for STT API.
     Returns: list of {'start': float, 'packets': list, 'end': float}
     """
     if not packets: return []
@@ -76,44 +137,28 @@ def get_speech_segments(packets: list, gap_threshold: float = 1.5) -> list:
     packets.sort(key=lambda x: x[0])
     
     segments = []
-    current_packets = []
+    current_packets = [packets[0]]
     
-    # Constants for duration calc
-    FRAME_RATE = 48000
-    CHANNELS = 2
-    SAMPLE_WIDTH = 2
-    BYTES_PER_SECOND = FRAME_RATE * CHANNELS * SAMPLE_WIDTH # 192000
-
-    last_end_ts = -1.0
-    
-    for ts, pcm in packets:
-        duration = len(pcm) / BYTES_PER_SECOND
-        end_ts = ts + duration
+    for i in range(1, len(packets)):
+        # 20ms frame assumption
+        prev_end = packets[i-1][0] + 0.02 
+        curr_start = packets[i][0]
         
-        if last_end_ts < 0:
-            current_packets.append((ts, pcm))
-            last_end_ts = end_ts
-            continue
-            
-        gap = ts - last_end_ts
-        if gap > gap_threshold:
+        if curr_start - prev_end > gap_threshold:
             # Close current segment
-            if current_packets:
-                segments.append({
-                    'start': current_packets[0][0],
-                    'end': last_end_ts,
-                    'packets': current_packets
-                })
-            current_packets = [(ts, pcm)]
-        else:
-            current_packets.append((ts, pcm))
-            
-        last_end_ts = end_ts
-        
+            segments.append({
+                'start': current_packets[0][0],
+                'end': prev_end,
+                'packets': current_packets
+            })
+            current_packets = []
+        current_packets.append(packets[i])
+    
     if current_packets:
+        last_end = current_packets[-1][0] + 0.02
         segments.append({
             'start': current_packets[0][0],
-            'end': last_end_ts,
+            'end': last_end,
             'packets': current_packets
         })
         

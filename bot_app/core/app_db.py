@@ -13,9 +13,18 @@ class AppDB:
 
     async def connect(self):
         try:
-            self.pool = await asyncpg.create_pool(self.dsn)
+            # Configure pool for performance
+            self.pool = await asyncpg.create_pool(
+                self.dsn,
+                min_size=5,
+                max_size=20,
+                max_queries=1000,
+                max_inactive_connection_lifetime=300.0,
+                timeout=30.0,
+                server_settings={'synchronous_commit': 'off'}
+            )
             await self.init_schema()
-            logger.info("Connected to PostgreSQL.")
+            logger.info("Connected to PostgreSQL with connection pool (sync_commit=off).")
         except Exception as e:
             logger.error(f"Failed to connect to DB: {e}")
             raise
@@ -55,6 +64,14 @@ class AppDB:
         cfg = await self.get_config(guild_id)
         cfg[key] = value
         await self.pool.execute(sql.SET_CONFIG, guild_id, json.dumps(cfg))
+
+    # Auto-Pause settings helpers
+    async def get_auto_pause_delay(self, guild_id: int) -> int:
+        cfg = await self.get_config(guild_id)
+        return int(cfg.get("auto_pause_minutes", 10))
+
+    async def set_auto_pause_delay(self, guild_id: int, minutes: int):
+        await self.set_config_value(guild_id, "auto_pause_minutes", minutes)
 
     # ---- Persistence (Panel & Logs) ----
     async def set_panel(self, guild_id: int, channel_id: int, message_id: int):

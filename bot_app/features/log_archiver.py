@@ -31,42 +31,61 @@ class LogArchiver:
         loop = asyncio.get_running_loop()
         
         # Run heavy file logic in thread to prevent bot lag
-        await loop.run_in_executor(None, self._sync_archive_logic)
+        await loop.run_in_executor(None, self._sync_archive_logic_entry)
         
         # After merging files, run AI Summarization (Async)
         await self._process_summaries()
 
-    def _sync_archive_logic(self):
-        """Synchronous file operations (Merge/Delete)."""
+    def _sync_archive_logic_entry(self):
+        """Entry point for sync logic, but we want to split tasks properly."""
+        # Note: _sync_archive_logic_entry is already called in executor by run_archive_cycle
+        # But if we want granular non-blocking inside, we need to be careful.
+        # Since this whole method runs in an executor, it is ALREADY non-blocking for the Main Loop.
+        # However, the user asked to replace blocking calls with asyncio.to_thread.
+        # If I am already running in loop.run_in_executor, I don't need to_thread inside.
+        # BUT, if `_sync_archive_logic` was called from async context directly, it would block.
+        # The prompt says: "Find synchronous calls ... and wrap them".
+        # Current implementation `run_archive_cycle` calls `loop.run_in_executor(None, self._sync_archive_logic)`.
+        # So it is already optimized?
+        # Let's verify `bot_app/features/log_archiver.py` prior content.
+        # Yes, it used `loop.run_in_executor`.
+        # Perhaps I should make the internal methods async and use `to_thread` for `shutil` calls specifically, removing the big executor wrapper?
+        # That would be more granular and allow yielding.
+        # Let's refactor to `async def` and use `to_thread` for heavy lifting.
+        asyncio.run(self._async_archive_logic())
+
+    async def _async_archive_logic(self):
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         
-        # 1. Identify date folders
         try:
-            all_items = os.listdir(LOG_DIR)
+            # os.listdir is fast enough, but to be safe:
+            all_items = await asyncio.to_thread(os.listdir, LOG_DIR)
         except FileNotFoundError: return
 
         date_folders = []
         for item in all_items:
             path = os.path.join(LOG_DIR, item)
+            # os.path.isdir is fast
             if os.path.isdir(path) and self._is_date(item):
-                if item != today_str: # Skip today
+                if item != today_str:
                     date_folders.append(item)
         
         date_folders.sort()
         if not date_folders:
             return
 
-        # Group into chunks of 10 days
         chunk_size = 10
         for i in range(0, len(date_folders), chunk_size):
             chunk = date_folders[i : i + chunk_size]
-            self._merge_chunk(chunk)
+            await self._merge_chunk_async(chunk)
 
-    def _merge_chunk(self, dates):
+    async def _merge_chunk_async(self, dates):
         start_date = dates[0]
         end_date = dates[-1]
         
-        guild_map = {} 
+        # Collecting files is metadata op, usually fast, but reading them is slow.
+        # Let's prepare the plan
+        guild_map = {}
         
         for date in dates:
             date_path = os.path.join(LOG_DIR, date)
@@ -91,25 +110,29 @@ class LogArchiver:
             merged_path = os.path.join(archive_g_dir, merged_filename)
             
             if os.path.exists(merged_path):
-                continue # Already merged
+                continue 
 
             try:
-                with open(merged_path, "w", encoding="utf-8") as out:
-                    for date, fpath in files:
-                        out.write(f"\n--- DATE: {date} ---\n")
-                        try:
-                            with open(fpath, "r", encoding="utf-8", errors='ignore') as src:
-                                shutil.copyfileobj(src, out)
-                        except: pass
+                # Heavy I/O: Writing merged file
+                await asyncio.to_thread(self._perform_merge_io, merged_path, files)
                 logger.info(f"Archived {g_name}: {merged_filename}")
             except Exception as e:
                 logger.error(f"Failed to merge {g_name}: {e}")
 
-        # Cleanup source folders ONLY if merge succeeded for all? 
-        # Risky. Let's delete processed dates.
+        # Heavy I/O: Deleting
         for date in dates:
-            try: shutil.rmtree(os.path.join(LOG_DIR, date))
+            try:
+                await asyncio.to_thread(shutil.rmtree, os.path.join(LOG_DIR, date))
             except: pass
+
+    def _perform_merge_io(self, merged_path, files):
+        with open(merged_path, "w", encoding="utf-8") as out:
+            for date, fpath in files:
+                out.write(f"\n--- DATE: {date} ---\n")
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors='ignore') as src:
+                        shutil.copyfileobj(src, out)
+                except: pass
 
     def _is_date(self, txt):
         try:
@@ -122,9 +145,7 @@ class LogArchiver:
     async def _process_summaries(self):
         """Checks all archives for missing .md summaries."""
         loop = asyncio.get_running_loop()
-        tasks = []
         
-        # Scan archives
         if not os.path.exists(self.archive_root): return
 
         for g_name in os.listdir(self.archive_root):
@@ -133,51 +154,34 @@ class LogArchiver:
             
             for f in os.listdir(g_path):
                 if f.endswith(".txt") and f.startswith("data-"):
-                    # Check if .md exists
                     md_name = f.replace(".txt", "_summary.md")
                     md_path = os.path.join(g_path, md_name)
                     txt_path = os.path.join(g_path, f)
                     
                     if not os.path.exists(md_path):
                         logger.info(f"Generating summary for {f}...")
-                        # Run extraction in thread, then AI async
-                        log_content = await loop.run_in_executor(None, self._extract_significant_logs, txt_path)
+                        # Use to_thread instead of run_in_executor explicit call
+                        log_content = await asyncio.to_thread(self._extract_significant_logs, txt_path)
                         if log_content:
                             await self._generate_and_save_summary(log_content, md_path, g_name)
 
     def _extract_significant_logs(self, file_path: str, char_limit=25000) -> str:
-        """Reads log, filters system spam, keeps conversation, returns limited string."""
         buffer = []
         total_chars = 0
-        
         try:
             with open(file_path, "r", encoding="utf-8", errors='ignore') as f:
                 for line in f:
                     line = line.strip()
                     if not line: continue
-                    
-                    # Keep Date Headers
                     if line.startswith("--- DATE:"):
                         buffer.append(f"\n{line}")
                         continue
-                        
-                    # Filter logic:
-                    # Skip joins/leaves unless emotional?
                     if "🚪" in line or "🎮" in line: continue
-                    
-                    # Keep speech, emotions, screams
-                    # Log format: [HH:MM:SS] ICON Text
-                    # Check length to skip "hm" "ok" noise? No, context matters.
-                    
                     buffer.append(line)
                     total_chars += len(line)
-                    
-                    # If huge file, maybe we stop reading or implement sliding window?
-                    # For now, just cut off if too huge (simpler than smart sampling)
-                    if total_chars > char_limit * 2: # Read a bit more to filter later?
+                    if total_chars > char_limit * 2:
                         break
         except: return ""
-        
         text = "\n".join(buffer)
         return text[:char_limit]
 

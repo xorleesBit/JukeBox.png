@@ -4,6 +4,7 @@ import logging
 import warnings
 import asyncio
 import discord
+import aiohttp
 from discord.ext import commands
 
 from .core.config import TOKEN, PROJECT_DIR
@@ -42,12 +43,17 @@ bot.loggers = state.loggers
 # Helper lambda to match old interface if cogs use it
 bot.get_settings = state.get_settings
 # Inject panel logic for reuse if needed (though it's better to import)
-bot.ensure_panel_func = lambda g, force=False: panel_control.ensure_panel_logic(bot, g, app_db, force)
+bot.ensure_panel_func = lambda g, force_create_channel=False: panel_control.ensure_panel_logic(bot, g, app_db, force_create_channel)
 
 # --- Events ---
 
 @bot.event
 async def on_ready():
+    # Initialize Global HTTP Session
+    if state.http_session is None or state.http_session.closed:
+        state.http_session = aiohttp.ClientSession()
+        print("✅ Global HTTP Session initialized")
+
     # 0. Sync Owner Info
     if not state.dev_manager.OWNER_IDS:
         app_info = await bot.application_info()
@@ -144,6 +150,11 @@ async def shutdown_handler(signal_type):
     if hasattr(bot, 'db'):
         print("   Closing Database...")
         await bot.db.close()
+
+    # 4. Close HTTP Session
+    if state.http_session and not state.http_session.closed:
+        print("   Closing HTTP Session...")
+        await state.http_session.close()
         
     print("👋 Graceful shutdown complete. Bye!")
     # Force exit to kill daemon threads
@@ -178,6 +189,15 @@ def run():
         if sys.platform == 'win32':
             # Windows specific policy for signals
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        else:
+            # Try uvloop on non-Windows
+            try:
+                import uvloop
+                asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+                print("🚀 uvloop active")
+            except ImportError:
+                print("⚠️ uvloop not installed, using default asyncio loop")
+
         asyncio.run(main())
     except KeyboardInterrupt: 
         pass

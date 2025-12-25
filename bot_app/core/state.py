@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from bot_app.core.runtime_settings import RuntimeSettings
     from bot_app.core.app_db import AppDB
     import discord
+    import aiohttp
 
 from bot_app.core.dev_manager import dev_manager
 
@@ -17,6 +18,7 @@ tasks: list[asyncio.Task] = []
 
 # We will inject DB instance here later
 db: "AppDB | None" = None
+http_session: "aiohttp.ClientSession | None" = None
 
 def get_settings(guild_id: int) -> "RuntimeSettings":
     """

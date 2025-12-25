@@ -20,7 +20,7 @@ from bot_app.audio.vad import vad
 
 logger = logging.getLogger(__name__)
 
-@dataclass(order=True)
+@dataclass(order=True, slots=True)
 class ChunkJob:
     priority: int # 0=Emergency, 10=Normal (Lower processed first)
     chunk_start: float
@@ -29,14 +29,14 @@ class ChunkJob:
     user_map: dict = field(compare=False)
     base_dir: str = field(compare=False)
     guild_id: int = field(compare=False)
-    stt_provider: str = field(compare=False, default="azure") # Added provider choice
+    stt_provider: str = field(compare=False, default="azure")
 
 class ChunkProcessor:
     def __init__(self, on_audio_phrase=None, db=None):
         self.q: queue.PriorityQueue[ChunkJob] = queue.PriorityQueue()
         self.stop_evt = threading.Event()
         self.thread: threading.Thread | None = None
-        self.db = db # Injected
+        self.db = db
 
         self.stats_lock = threading.Lock()
         self.total_text_bytes = 0
@@ -78,12 +78,10 @@ class ChunkProcessor:
         logger.info("ChunkProcessor stopping...")
         self.stop_evt.set()
         try:
-            # High priority poison pill
             self.q.put_nowait(ChunkJob(99, time.time(), time.time(), {}, {}, "", 0))
         except Exception: pass
 
     def join(self):
-        """Waits for the worker thread to finish."""
         if self.thread and self.thread.is_alive():
             logger.info("Waiting for ChunkProcessor thread to finish...")
             self.thread.join()
@@ -146,11 +144,10 @@ class ChunkProcessor:
                 packets = packets_or_buffer
             
             if packets:
-                # Ensure sorted
                 packets.sort(key=lambda x: x[0])
                 loaded_data[user_id] = packets
                 p_start = packets[0][0]
-                p_end = packets[-1][0] # Approx
+                p_end = packets[-1][0]
                 
                 if p_start < global_min_ts: global_min_ts = p_start
                 if p_end > global_max_ts: global_max_ts = p_end
@@ -161,32 +158,22 @@ class ChunkProcessor:
             return
 
         # --- 2. Human Pipeline (Mixing) ---
-        # Canvas: global_min_ts to global_max_ts
-        # Requirement: "Find global min/max... Create 'base track' of silence duration max-min."
-        
+        # Optimized with in-memory buffer for mixing? 
+        # Actually AudioSegment writes to disk for export(mp3). That's fine for the final file.
         mix_duration_sec = global_max_ts - global_min_ts
-        # Just in case of floating point weirdness
         if mix_duration_sec < 0.1: mix_duration_sec = 0.1
         
         mix_duration_ms = int(mix_duration_sec * 1000)
-        full_mix = AudioSegment.silent(duration=mix_duration_ms)
+        full_mix = AudioSegment.silent(duration=mix_duration_ms, frame_rate=48000)
         
-        speech_stats = {} # uid -> seconds
+        speech_stats = {} 
 
         for user_id, packets in loaded_data.items():
-            # Reconstruct relative to global_min_ts
-            # reconstruct_user_audio uses (chunk_start) to calc delay.
-            # So passing global_min_ts as chunk_start aligns everyone correctly to the canvas start.
             track = reconstruct_user_audio(packets, global_min_ts, global_max_ts)
-            
-            # Crop to exact duration if slightly over due to packet rounding
             if len(track) > mix_duration_ms:
                 track = track[:mix_duration_ms]
-                
             full_mix = full_mix.overlay(track)
-            
-            # Simple speech stats (sum of packet durations)
-            speech_stats[user_id] = len(packets) * 0.02 # approx 20ms
+            speech_stats[user_id] = len(packets) * 0.02
 
         # Export Human Mix
         mp3_path = os.path.join(job.base_dir, "last_mix.mp3")
@@ -201,26 +188,31 @@ class ChunkProcessor:
             
         self.last_chunk_stats = (job.guild_id, speech_stats)
 
-        # --- 3. Robot Pipeline (STT) ---
+        # --- 3. Robot Pipeline (STT Batching) ---
         futures = []
         fut_meta = {}
         
         # Helper for transcription
         def transcribe_one(audio_bytes: io.BytesIO, abs_start: float, user_name: str, duration: float):
-            # Write to temp file just for the API call (Adapter pattern)
-            # We use delete=False to ensure it exists for the called function, then delete manual.
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp.write(audio_bytes.getvalue())
-                tmp_path = tmp.name
-            
-            try:
-                if job.stt_provider == "assembly":
-                    return transcribe_file_assembly_sentences(tmp_path, abs_start, user_name, duration)
-                else:
+            # Optimizations:
+            # 1. Reset pointer
+            audio_bytes.seek(0)
+            # 2. Set name attribute for libraries that inspect it
+            audio_bytes.name = "audio.wav"
+
+            if job.stt_provider == "assembly":
+                # Pass BytesIO directly (Supported by updated integration)
+                return transcribe_file_assembly_sentences(audio_bytes, abs_start, user_name, duration)
+            else:
+                # Azure: Requires file path usually. We create temp file here ONLY if needed.
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp.write(audio_bytes.read())
+                    tmp_path = tmp.name
+                try:
                     return transcribe_file_azure_sentences(tmp_path, abs_start, user_name, duration)
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
 
         with ThreadPoolExecutor(max_workers=max(1, TRANSCRIBE_WORKERS)) as pool:
             for user_id, packets in loaded_data.items():
@@ -228,50 +220,67 @@ class ChunkProcessor:
                 
                 # 3.1 VAD / Clustering
                 segments = get_speech_segments(packets, gap_threshold=1.5)
+                valid_segments = [s for s in segments if (s['end'] - s['start']) >= 0.5]
                 
-                for seg in segments:
-                    # 3.2 Filter noise
-                    seg_duration = seg['end'] - seg['start']
-                    if seg_duration < 0.5:
-                        continue
-                        
-                    # 3.3 Prepare Audio
-                    # We reconstruct JUST this segment.
-                    # Start/End are exact packet bounds, so no extra padding at start (delay=0).
-                    seg_audio = reconstruct_user_audio(seg['packets'], seg['start'], seg['end'])
+                if not valid_segments:
+                    continue
                     
-                    # Convert to 16kHz Mono
+                # 3.2 Batch Assembly
+                combined_audio = AudioSegment.silent(duration=0) 
+                time_map = [] 
+                silence_pad = AudioSegment.silent(duration=1000)
+                
+                for seg in valid_segments:
+                    seg_audio = reconstruct_user_audio(seg['packets'], seg['start'], seg['end'])
                     seg_audio = seg_audio.set_frame_rate(16000).set_channels(1)
                     
-                    # Export to BytesIO
-                    buf = io.BytesIO()
-                    seg_audio.export(buf, format="wav")
-                    buf.seek(0)
+                    start_ms = len(combined_audio)
+                    combined_audio += seg_audio
+                    end_ms = len(combined_audio)
                     
-                    # 3.4 Submit
-                    fut = pool.submit(transcribe_one, buf, seg['start'], user_name, seg_duration)
-                    futures.append(fut)
-                    fut_meta[fut] = (user_id, user_name)
+                    time_map.append({
+                        'start_sec': start_ms / 1000.0,
+                        'end_sec': end_ms / 1000.0,
+                        'real_ts': seg['start']
+                    })
+                    combined_audio += silence_pad
+                
+                # Export Combined to In-Memory Buffer
+                buf = io.BytesIO()
+                combined_audio.export(buf, format="wav")
+                # Buffer is ready for use
+                
+                # 3.3 Submit Batch
+                fut = pool.submit(transcribe_one, buf, 0.0, user_name, len(combined_audio)/1000.0)
+                futures.append(fut)
+                fut_meta[fut] = (user_id, user_name, time_map)
 
-            # --- 4. Collect Results ---
+            # --- 4. Collect & Map Results ---
             for fut in as_completed(futures):
-                user_id, user_name = fut_meta.get(fut, ("Unknown", "Unknown"))
+                user_id, user_name, time_map = fut_meta.get(fut, ("Unknown", "Unknown", []))
                 try:
                     sentences = fut.result()
-                    for abs_ts, line in sentences:
-                        store.append_event(abs_ts, "🗣️", line)
-                        phrase = line
-                        prefix = f"{user_name}: "
-                        if phrase.startswith(prefix): phrase = phrase[len(prefix):].strip()
+                    for rel_ts, line in sentences:
+                        matched_real_ts = None
+                        for tm in time_map:
+                            if (tm['start_sec'] - 0.5) <= rel_ts <= (tm['end_sec'] + 0.5):
+                                matched_real_ts = tm['real_ts']
+                                break
                         
-                        if callable(self.on_audio_phrase) and user_id != "Unknown":
-                            try: self.on_audio_phrase(int(user_id), user_name, phrase)
-                            except: pass
+                        if matched_real_ts is not None:
+                            phrase = line
+                            prefix = f"{user_name}: "
+                            if phrase.startswith(prefix): phrase = phrase[len(prefix):].strip()
+                            
+                            store.append_event(matched_real_ts, "🗣️", f"{user_name}: {phrase}")
+                            
+                            if callable(self.on_audio_phrase) and user_id != "Unknown":
+                                try: self.on_audio_phrase(int(user_id), user_name, phrase)
+                                except: pass
                 except Exception as e:
-                    logger.error(f"Transcribe error {user_name}: {e}")
+                    logger.error(f"Transcribe batch error {user_name}: {e}")
                     continue
 
-        # Text stats update
         store.ensure_rebuilt(job.chunk_start)
         store.ensure_rebuilt(job.chunk_end)
 

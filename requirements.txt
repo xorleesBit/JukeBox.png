@@ -10,3 +10,5 @@ onnxruntime
 numpy
 psutil
 assemblyai
+aiohttp
+

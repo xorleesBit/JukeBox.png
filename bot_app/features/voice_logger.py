@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import re
 import logging
+import audioop
 
 import discord
 from discord.ext import voice_recv
@@ -47,6 +48,10 @@ class VoiceLogger:
 
         self.chunk_duration = self.settings.get_int("logger_chunk_seconds") or DEFAULT_CHUNK_DURATION
         self.publish_interval = self.settings.get_int("logger_publish_seconds") or DEFAULT_PUBLISH_SECONDS
+        
+        # Auto-Pause
+        self.auto_pause_minutes = self.settings.get_int("auto_pause_minutes") or 10
+        self.last_voice_time = time.time()
 
         self.started_at = 0.0
         self.pause_started_at: float | None = None
@@ -64,6 +69,10 @@ class VoiceLogger:
 
         self.words_acc = WordsAccumulator()
         self.words_task: asyncio.Task | None = None
+        
+        # Batch buffer for word updates
+        self.pending_updates = [] # List of tuples/dicts to insert
+        self.pending_lock = asyncio.Lock()
 
         self.is_prank_playing = False
         self.prank: PrankManager | None = None
@@ -114,6 +123,24 @@ class VoiceLogger:
             paused += (now - self.pause_started_at)
         return max(0.0, now - self.started_at - paused)
 
+    # ---- Energy VAD & Auto-Pause Logic ----
+    
+    def _check_activity(self, pcm_data):
+        """Called for every packet by Sink."""
+        try:
+            rms = audioop.rms(pcm_data, 2)
+        except Exception: 
+            return
+
+        if rms > 300: # Threshold for activity
+            self.last_voice_time = time.time()
+            if self.is_paused and self.state == "listening":
+                # Wake Up
+                self.is_paused = False
+                self.log_event(time.time(), "▶️", "Auto-Resume: Voice detected")
+                self._timer_reset_evt.set() # Wake up chunk loop if sleeping
+                asyncio.run_coroutine_threadsafe(self.update_dashboard(), self.bot.loop)
+
     # ---- words ----
     def _on_audio_phrase_from_worker_thread(self, user_id: int, user_name: str, phrase_text: str):
         if self.bot.is_closed() or not self.bot.loop.is_running():
@@ -136,12 +163,63 @@ class VoiceLogger:
         w_count = count_words(phrase_text)
         
         if w_count > 0:
-            await self.db.upsert_user(self.guild_id, user_id, user_name)
-            await self.db.add_xp_and_words(self.guild_id, user_id, w_count, w_text=0, w_audio=w_count, words_list=w_list)
+            # Instead of direct DB call, add to batch buffer
+            async with self.pending_lock:
+                self.pending_updates.append({
+                    'guild_id': self.guild_id,
+                    'user_id': user_id,
+                    'user_name': user_name,
+                    'count': w_count,
+                    'words_list': w_list
+                })
 
     async def _words_flush_loop(self):
+        """
+        Periodically flushes accumulated word stats to DB (Batch Insert).
+        """
         while self.is_recording:
             await asyncio.sleep(WORDS_FLUSH_SECONDS)
+            
+            updates = []
+            async with self.pending_lock:
+                if self.pending_updates:
+                    updates = self.pending_updates
+                    self.pending_updates = []
+            
+            if not updates:
+                continue
+                
+            # Process batch
+            # Group by user to minimize DB calls further
+            user_stats = {} 
+            
+            for up in updates:
+                uid = up['user_id']
+                if uid not in user_stats:
+                    user_stats[uid] = {
+                        'name': up['user_name'],
+                        'count': 0,
+                        'words': []
+                    }
+                user_stats[uid]['count'] += up['count']
+                user_stats[uid]['words'].extend(up['words_list'])
+                # Update name to latest
+                user_stats[uid]['name'] = up['user_name']
+                
+            # Perform DB writes
+            for uid, data in user_stats.items():
+                try:
+                    await self.db.upsert_user(self.guild_id, uid, data['name'])
+                    await self.db.add_xp_and_words(
+                        self.guild_id, 
+                        uid, 
+                        data['count'], 
+                        w_text=0, 
+                        w_audio=data['count'], 
+                        words_list=data['words']
+                    )
+                except Exception as e:
+                    logger.error(f"Batch DB write error for {uid}: {e}")
 
     # ---- start/stop ----
     async def start(self, guild: discord.Guild, voice_channel: discord.VoiceChannel, text_channel: discord.TextChannel):
@@ -151,6 +229,7 @@ class VoiceLogger:
         self.is_paused = False
         self.state = "connecting"
         self.started_at = time.time()
+        self.last_voice_time = time.time() # Reset voice time
         self.paused_total = 0.0
         self.pause_started_at = None
         self.voice_channel_id = int(voice_channel.id)
@@ -182,10 +261,16 @@ class VoiceLogger:
         if self.bot.user:
             ignore_ids.add(self.bot.user.id)
 
+        # Intercept PCM in Sink
+        def on_pcm_wrapper(uid, ts, pcm):
+            self._check_activity(pcm) # Energy check
+            if self.sampler:
+                self.sampler.feed(uid, ts, pcm)
+
         self.sink = TimeStampedSink(
             is_paused_callable=lambda: self.is_paused,
             ignore_user_ids=ignore_ids,
-            on_pcm=(lambda uid, ts, pcm: self.sampler.feed(uid, ts, pcm)) if self.sampler else None,
+            on_pcm=on_pcm_wrapper,
             should_forward_pcm=(lambda: bool(self.prank and self.prank.should_accept_pcm())) if self.prank else None,
         )
         self.vc.listen(self.sink)
@@ -241,8 +326,19 @@ class VoiceLogger:
     # ---- chunk/publish ----
     async def _chunk_loop(self):
         while self.is_recording:
+            # Auto-Pause Check
+            if self.auto_pause_minutes > 0 and not self.is_paused:
+                elapsed_silence = time.time() - self.last_voice_time
+                if elapsed_silence > (self.auto_pause_minutes * 60):
+                    logger.info("Auto-Pausing due to silence.")
+                    self.log_event(time.time(), "⏸️", f"Auto-Pause: Silence > {self.auto_pause_minutes}m")
+                    # Force rotate to save pending audio
+                    await self.rotate()
+                    self.is_paused = True
+                    await self.update_dashboard()
+
             if self.is_paused or not self.sink:
-                await asyncio.sleep(1)
+                await asyncio.sleep(1) # Sleep while paused
                 continue
 
             now = time.time()
@@ -414,10 +510,25 @@ class VoiceLogger:
 
     def make_dashboard_embed(self) -> discord.Embed:
         e = discord.Embed(title="Voice Logger", color=discord.Color.blurple())
-        e.add_field(name="Status", value=self.state, inline=True)
+        
+        # Enhanced status
+        state_emoji = "🔴"
+        if self.state == "listening":
+            state_emoji = "🟢"
+        elif self.state == "connecting":
+            state_emoji = "🟡"
+            
+        status_val = f"{state_emoji} {self.state}"
+        if self.is_paused:
+            status_val += " (PAUSED 💤)"
+            
+        e.add_field(name="Status", value=status_val, inline=True)
         e.add_field(name="Recorded", value=fmt_duration(self.recorded_seconds()), inline=True)
         e.add_field(name="Chunk", value=f"{self.chunk_duration}s", inline=True)
         e.add_field(name="Upload", value=f"{self.publish_interval}s", inline=True)
+        
+        ap_text = f"{self.auto_pause_minutes}m" if self.auto_pause_minutes > 0 else "OFF"
+        e.add_field(name="Auto-Pause", value=ap_text, inline=True)
         return e
 
     async def update_dashboard(self):

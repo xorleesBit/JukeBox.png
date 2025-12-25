@@ -44,6 +44,38 @@ class PublishDurationSelect(discord.ui.Select):
         await interaction.response.send_message(f"Интервал отправки: {sec}с", ephemeral=True)
         await self.logger.update_dashboard()
 
+class AutoPauseSelect(discord.ui.Select):
+    def __init__(self, logger_obj):
+        self.logger = logger_obj
+        options = [
+            discord.SelectOption(label="Выкл", emoji="🚫", value="0"),
+            discord.SelectOption(label="2 мин", emoji="⚡", value="2"),
+            discord.SelectOption(label="5 мин", emoji="⏱️", value="5"),
+            discord.SelectOption(label="10 мин", emoji="🕰️", value="10"),
+            discord.SelectOption(label="30 мин", emoji="💤", value="30"),
+        ]
+        # Current value? We don't easily have it here without db call or logger state
+        # But we can assume it's just a setting action.
+        super().__init__(placeholder="⏱️ Авто-пауза...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.logger: return await interaction.response.send_message("Логгер не активен", ephemeral=True)
+        
+        try:
+            val = int(self.values[0])
+            # Update DB
+            await self.logger.db.set_auto_pause_delay(self.logger.guild_id, val)
+            # Update Settings Cache
+            self.logger.settings.set_int("auto_pause_minutes", val)
+            # Update Logger State
+            self.logger.auto_pause_minutes = val
+            
+            state_str = f"{val} мин" if val > 0 else "ВЫКЛ"
+            await interaction.response.send_message(f"Авто-пауза: {state_str}", ephemeral=True)
+            await self.logger.update_dashboard()
+        except Exception:
+            await interaction.response.send_message("Ошибка сохранения настройки.", ephemeral=True)
+
 class TTLSelect(discord.ui.Select):
     def __init__(self, settings):
         self.settings = settings
@@ -63,6 +95,7 @@ class LoggerSettingsView(discord.ui.View):
         self.logger = logger_obj
         self.add_item(ChunkDurationSelect(logger_obj))
         self.add_item(PublishDurationSelect(logger_obj))
+        self.add_item(AutoPauseSelect(logger_obj))
 
 class PrankSettingsView(discord.ui.View):
     def __init__(self, settings, parent_view):
@@ -344,6 +377,9 @@ class FXSelect(discord.ui.Select):
         # Let's assume FX also charges? Or logic is in play_phrase_id?
         # Logic: play_phrase_id is backend. Charges should be UI.
         
+        if not self.logger:
+            return await interaction.response.send_message("Логгер не активен.", ephemeral=True)
+
         settings = self.logger.settings
         cost = settings.get_int("prank_play_cost") or 0
         user_id = interaction.user.id
@@ -382,6 +418,9 @@ class PhraseActionView(discord.ui.View):
 
     @discord.ui.button(label="Play", style=discord.ButtonStyle.secondary, row=0)
     async def btn_play(self, interaction: discord.Interaction, _):
+        if not self.logger:
+            return await interaction.response.send_message("Логгер не активен", ephemeral=True)
+
         # PAYMENT LOGIC
         settings = self.logger.settings
         cost = settings.get_int("prank_play_cost") or 0

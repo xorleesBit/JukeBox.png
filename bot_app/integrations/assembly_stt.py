@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 import time
-from bot_app.core.config import TOKEN # We'll add ASSEMBLY_KEY to config.py later
+from bot_app.core.config import TOKEN 
 
 logger = logging.getLogger(__name__)
 
@@ -16,39 +16,43 @@ try:
 except ImportError:
     aai = None
 
-def transcribe_file_assembly_sentences(filename: str, abs_chunk_start_ts: float, user_name: str, duration_sec: float):
+def transcribe_file_assembly_sentences(file_source, abs_chunk_start_ts: float, user_name: str, duration_sec: float):
     """
     Simulates Azure's sentence-level transcription using AssemblyAI.
     Runs in ThreadPoolExecutor.
+    
+    file_source: str (path) OR file-like object (io.BytesIO)
     """
     if not ASSEMBLYAI_KEY or aai is None:
         logger.error("AssemblyAI not configured.")
         return []
 
-    if not os.path.exists(filename):
+    # If file_source is a path, check existence
+    if isinstance(file_source, str) and not os.path.exists(file_source):
         return []
 
-    logger.info(f"Starting AssemblyAI STT for {filename} ({user_name})")
+    logger.info(f"Starting AssemblyAI STT for {user_name}...")
 
     try:
         # 1. Configure
         config = aai.TranscriptionConfig(
-            language_code=os.getenv("AZURE_LANGUAGE", "ru")[:2], # Assembly uses 2-char codes (ru, en)
-            speech_model=aai.SpeechModel.nano, # 'nano' is cheaper/faster, 'universal' is better.
+            language_code=os.getenv("AZURE_LANGUAGE", "ru")[:2],
+            speech_model=aai.SpeechModel.nano,
             punctuate=True,
             format_text=True
         )
         
         # 2. Transcribe (Blocking in this thread)
         transcriber = aai.Transcriber(config=config)
-        transcript = transcriber.transcribe(filename)
+        
+        # AssemblyAI SDK accepts file paths or file-like objects directly
+        transcript = transcriber.transcribe(file_source)
 
         if transcript.status == aai.TranscriptStatus.error:
             logger.error(f"AssemblyAI Error: {transcript.error}")
             return []
 
         # 3. Process Sentences
-        # AssemblyAI provides transcript.get_sentences()
         sentences = transcript.get_sentences()
         
         results = []
