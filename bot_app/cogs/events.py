@@ -13,11 +13,14 @@ class EventsCog(commands.Cog):
             return
         
         # 1. Custom command handling logic from original bot_entry
+        # 1. Custom command handling logic: Clean up commands if they are valid
         if message.content.startswith("!"):
-            try:
-                await message.delete()
-            except Exception:
-                pass
+            ctx = await self.bot.get_context(message)
+            if ctx.valid:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
         
         # Note: bot.process_commands(message) is handled by the framework 
         # unless on_message is overridden on the bot instance. 
@@ -52,9 +55,11 @@ class EventsCog(commands.Cog):
         
         mon_id = l.voice_channel_id
         if after.channel and after.channel.id == mon_id and (not before.channel or before.channel.id != mon_id):
-            l.log_event(time.time(), "🚪", f"{member.name} зашел.")
+            if member.id != self.bot.user.id:
+                l.log_event(time.time(), "🚪", f"{member.name} зашел.")
         elif before.channel and before.channel.id == mon_id and (not after.channel or after.channel.id != mon_id):
-            l.log_event(time.time(), "🚪", f"{member.name} вышел.")
+            if member.id != self.bot.user.id:
+                l.log_event(time.time(), "🚪", f"{member.name} вышел.")
 
     @commands.Cog.listener()
     async def on_presence_update(self, before, after):

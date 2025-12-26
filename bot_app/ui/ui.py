@@ -96,33 +96,54 @@ class LoggerSettingsView(discord.ui.View):
         self.add_item(ChunkDurationSelect(logger_obj))
         self.add_item(PublishDurationSelect(logger_obj))
         self.add_item(AutoPauseSelect(logger_obj))
+        
+    @discord.ui.button(label="📥 Последнее Аудио", style=discord.ButtonStyle.secondary, row=4)
+    async def btn_audio(self, interaction: discord.Interaction, _):
+        if not self.logger: return await interaction.response.send_message("Логгер не активен", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        # Force publish with audio
+        await self.logger.publish_now(force=True, include_audio=True)
+        await interaction.followup.send("✅ Отправка аудио запрошена (см. канал логов).", ephemeral=True)
 
 class PrankSettingsView(discord.ui.View):
     def __init__(self, settings, parent_view):
         super().__init__(timeout=60)
         self.settings = settings
-        self.parent_view = parent_view # Kept for signature compatibility
+        self.parent_view = parent_view 
+        # Needs db and logger for Favs/Player but we only have settings/parent here.
+        # We can extract them from parent: self.parent_view.app.db etc.
+        # Assuming parent_view is ControlPanelView which has .app
+        self.app = getattr(parent_view, 'app', None) or getattr(parent_view, 'bot_app', None)
+        self.guild_id = settings.guild_id if hasattr(settings, 'guild_id') else None # Settings might be dict adapter?
+        # Actually Settings is usually DB config dict or wrapper. 
+        # Let's hope self.app exists.
+        
         self.add_item(TTLSelect(settings))
 
-    @discord.ui.button(label="Запись вкл/выкл", style=discord.ButtonStyle.secondary)
-    async def toggle_capture(self, interaction: discord.Interaction, _):
+    # Row 1: Toggles
+    @discord.ui.button(label="Rec", style=discord.ButtonStyle.secondary, row=1)
+    async def toggle_capture(self, interaction: discord.Interaction, button: discord.ui.Button):
         val = not self.settings.get_bool("prank_capture_enabled")
         self.settings.set_bool("prank_capture_enabled", val)
-        await interaction.response.send_message(f"Запись пранков: {val}", ephemeral=True)
+        button.style = discord.ButtonStyle.success if val else discord.ButtonStyle.secondary
+        await interaction.response.edit_message(view=self)
 
-    @discord.ui.button(label="Воспр. вкл/выкл", style=discord.ButtonStyle.secondary)
-    async def toggle_play(self, interaction: discord.Interaction, _):
+    @discord.ui.button(label="Play", style=discord.ButtonStyle.secondary, row=1)
+    async def toggle_play(self, interaction: discord.Interaction, button: discord.ui.Button):
         val = not self.settings.get_bool("prank_play_enabled")
         self.settings.set_bool("prank_play_enabled", val)
-        await interaction.response.send_message(f"Воспроизведение: {val}", ephemeral=True)
+        button.style = discord.ButtonStyle.success if val else discord.ButtonStyle.secondary
+        await interaction.response.edit_message(view=self)
 
-    @discord.ui.button(label="Auto-Tune", style=discord.ButtonStyle.primary)
-    async def toggle_autotune(self, interaction: discord.Interaction, _):
+    @discord.ui.button(label="Tune", style=discord.ButtonStyle.primary, row=1)
+    async def toggle_autotune(self, interaction: discord.Interaction, button: discord.ui.Button):
         val = not self.settings.get_bool("prank_auto_tune_enabled")
         self.settings.set_bool("prank_auto_tune_enabled", val)
-        await interaction.response.send_message(f"Auto-Tune режим: {val}", ephemeral=True)
-
-    @discord.ui.button(label="Цена (Money)", style=discord.ButtonStyle.success)
+        button.style = discord.ButtonStyle.success if val else discord.ButtonStyle.secondary
+        await interaction.response.edit_message(view=self)
+        
+    # Row 2: Configs
+    @discord.ui.button(label="💲 Цена", style=discord.ButtonStyle.secondary, row=2)
     async def price_btn(self, interaction: discord.Interaction, _):
         class _PriceModal(discord.ui.Modal):
             def __init__(self, s):
@@ -138,7 +159,7 @@ class PrankSettingsView(discord.ui.View):
                 except: await i.response.send_message("Ошибка", ephemeral=True)
         await interaction.response.send_modal(_PriceModal(self.settings))
 
-    @discord.ui.button(label="Лимиты", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="📊 Лимиты", style=discord.ButtonStyle.secondary, row=2)
     async def usage_btn(self, interaction: discord.Interaction, _):
         # Combined limit modal
         class _LimitModal(discord.ui.Modal):
@@ -157,7 +178,7 @@ class PrankSettingsView(discord.ui.View):
                 except: await i.response.send_message("Ошибка", ephemeral=True)
         await interaction.response.send_modal(_LimitModal(self.settings))
 
-    @discord.ui.button(label="Тайминги", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⏱️ Тайминги", style=discord.ButtonStyle.secondary, row=2)
     async def timing_btn(self, interaction: discord.Interaction, _):
         class _TimeModal(discord.ui.Modal):
             def __init__(self, s):
@@ -177,6 +198,33 @@ class PrankSettingsView(discord.ui.View):
                     await i.response.send_message("Тайминги обновлены.", ephemeral=True)
                 except: await i.response.send_message("Ошибка", ephemeral=True)
         await interaction.response.send_modal(_TimeModal(self.settings))
+
+    # Row 3: Actions (Moved from Main Panel)
+    @discord.ui.button(label="⭐ Избранное", style=discord.ButtonStyle.primary, row=3, custom_id="ps:favs")
+    async def btn_favs(self, interaction: discord.Interaction, _):
+        if not self.app or not self.guild_id: return await interaction.response.send_message("Ошибка контекста.", ephemeral=True)
+        
+        db = self.app.db
+        logger = self.app.loggers.get(self.guild_id)
+        
+        await interaction.response.send_message(
+            "⭐ **Избранные фразы**", 
+            view=FavoritesView(db, logger, self.guild_id), 
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="▶️ Плеер", style=discord.ButtonStyle.success, row=3, custom_id="ps:player")
+    async def btn_player(self, interaction: discord.Interaction, _):
+        if not self.app or not self.guild_id: return await interaction.response.send_message("Ошибка контекста.", ephemeral=True)
+        
+        logger = self.app.loggers.get(self.guild_id)
+        if not logger: return await interaction.response.send_message("Логгер не запущен.", ephemeral=True)
+
+        await interaction.response.send_message(
+            "▶️ **Плеер**", 
+            view=PlaybackView(logger), 
+            ephemeral=True
+        )
 
 class AudioSettingsView(discord.ui.View):
     def __init__(self, settings):

@@ -180,7 +180,7 @@ class DebugView(discord.ui.View):
         self.add_item(btn_admin)
 
         # 1.1 Toggle STT Provider
-        settings = self.bot.get_settings(self.target_guild_id) if self.target_guild_id else None
+        settings = await self.bot.get_settings(self.target_guild_id) if self.target_guild_id else None
         current_stt = settings.get_string("stt_provider") or "azure" if settings else "N/A"
         
         btn_stt = discord.ui.Button(

@@ -11,4 +11,5 @@ numpy
 psutil
 assemblyai
 aiohttp
+uvloop
 

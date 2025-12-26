@@ -11,20 +11,37 @@ class AppDB:
         self.dsn = dsn
         self.pool = None
 
-    async def connect(self):
+    async def connect(self, servers_count: int = 1):
+        """
+        Connect to database with dynamic pool sizing.
+        
+        Args:
+            servers_count: Number of Discord servers to optimize pool for
+        """
         try:
+            # Dynamic pool sizing based on server count
+            # Formula: base + per_server * count
+            min_size = max(5, servers_count * 2)
+            max_size = max(20, servers_count * 5)
+            
+            # Cap maximum to prevent excessive connections
+            max_size = min(max_size, 100)
+            
+            logger.info(f"Creating DB pool for {servers_count} servers: min={min_size}, max={max_size}")
+            
             # Configure pool for performance
             self.pool = await asyncpg.create_pool(
                 self.dsn,
-                min_size=5,
-                max_size=20,
-                max_queries=1000,
+                min_size=min_size,
+                max_size=max_size,
+                max_queries=5000,
                 max_inactive_connection_lifetime=300.0,
                 timeout=30.0,
+                command_timeout=60.0,
                 server_settings={'synchronous_commit': 'off'}
             )
             await self.init_schema()
-            logger.info("Connected to PostgreSQL with connection pool (sync_commit=off).")
+            logger.info(f"Connected to PostgreSQL with pool (min={min_size}, max={max_size}, sync_commit=off)")
         except Exception as e:
             logger.error(f"Failed to connect to DB: {e}")
             raise
@@ -52,6 +69,12 @@ class AppDB:
             
             await conn.execute(sql.MIGRATION_V4)
             await conn.execute(sql.INIT_INDEXES)
+            
+            # v4.1 Daily Bonus
+            try:
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_daily_ts FLOAT DEFAULT 0")
+            except Exception as e:
+                logger.warning(f"Migration: last_daily_ts column might exist or error: {e}")
 
     # ---- Config ----
     async def get_config(self, guild_id: int) -> dict:
@@ -179,8 +202,17 @@ class AppDB:
     async def update_rating(self, guild_id: int, user_id: int, delta: int):
         await self.pool.execute("UPDATE users SET rating = rating + $3 WHERE guild_id=$1 AND user_id=$2", guild_id, user_id, delta)
 
+    async def get_last_daily(self, guild_id: int, user_id: int) -> float:
+        val = await self.pool.fetchval("SELECT last_daily_ts FROM users WHERE guild_id=$1 AND user_id=$2", guild_id, user_id)
+        return float(val) if val else 0.0
+
+    async def set_last_daily(self, guild_id: int, user_id: int, ts: float):
+        # Ensure user exists first
+        await self.upsert_user(guild_id, user_id, "Unknown") 
+        await self.pool.execute("UPDATE users SET last_daily_ts=$1 WHERE guild_id=$2 AND user_id=$3", ts, guild_id, user_id)
+
     async def get_top_users(self, guild_id: int, limit=10):
-        return await self.pool.fetch("SELECT user_id, xp, level, rating FROM users WHERE guild_id=$1 ORDER BY xp DESC LIMIT $2", guild_id, limit)
+        return await self.pool.fetch("SELECT user_id, xp, level, rating, balance FROM users WHERE guild_id=$1 ORDER BY xp DESC LIMIT $2", guild_id, limit)
 
     async def get_word_stats(self, guild_id: int, user_id: int, limit=10):
         return await self.pool.fetch("SELECT word, count FROM word_stats WHERE guild_id=$1 AND user_id=$2 ORDER BY count DESC LIMIT $3", guild_id, user_id, limit)

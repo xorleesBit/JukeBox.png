@@ -70,20 +70,49 @@ class VoiceLogger:
         self.words_acc = WordsAccumulator()
         self.words_task: asyncio.Task | None = None
         
-        # Batch buffer for word updates
-        self.pending_updates = [] # List of tuples/dicts to insert
+        # Batch buffer for word updates (optimized)
+        self.pending_updates: dict[int, dict] = {}  # user_id -> aggregated stats
         self.pending_lock = asyncio.Lock()
+        self.max_pending_updates = 1000  # Limit to prevent memory issues
 
         self.is_prank_playing = False
         self.prank: PrankManager | None = None
         self.sampler: PrankSampler | None = None
 
         self.processor = ChunkProcessor(on_audio_phrase=self._on_audio_phrase_from_worker_thread)
-        self.processor.on_after_chunk = lambda stats=None: asyncio.run_coroutine_threadsafe(self._handle_chunk_complete(stats), self.bot.loop)
+        
+        # Safe callback wrapper for thread-to-async communication
+        self.processor.on_after_chunk = self._safe_callback_wrapper(self._handle_chunk_complete)
 
         self.loop_task: asyncio.Task | None = None
         self.publish_task: asyncio.Task | None = None
         self.last_publish_at = 0.0
+    
+    def _safe_callback_wrapper(self, coro_func):
+        """Safe wrapper for callbacks from worker threads."""
+        def wrapper(*args, **kwargs):
+            if self.bot.is_closed() or not self.bot.loop.is_running():
+                logger.warning("Bot loop not running, skipping callback")
+                return
+            
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    coro_func(*args, **kwargs),
+                    self.bot.loop
+                )
+                
+                # Add error handler
+                def handle_result(fut):
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        logger.error(f"Callback error: {e}", exc_info=True)
+                
+                future.add_done_callback(handle_result)
+            except Exception as e:
+                logger.error(f"Failed to schedule callback: {e}")
+        
+        return wrapper
 
     async def set_chunk_duration(self, seconds: int):
         self.chunk_duration = seconds
@@ -135,11 +164,16 @@ class VoiceLogger:
         if rms > 300: # Threshold for activity
             self.last_voice_time = time.time()
             if self.is_paused and self.state == "listening":
-                # Wake Up
+                # Wake Up from auto-pause
                 self.is_paused = False
                 self.log_event(time.time(), "▶️", "Auto-Resume: Voice detected")
                 self._timer_reset_evt.set() # Wake up chunk loop if sleeping
-                asyncio.run_coroutine_threadsafe(self.update_dashboard(), self.bot.loop)
+                
+                # Force dashboard update
+                try:
+                    asyncio.run_coroutine_threadsafe(self.update_dashboard(), self.bot.loop)
+                except Exception as e:
+                    logger.debug(f"Dashboard update error on resume: {e}")
 
     # ---- words ----
     def _on_audio_phrase_from_worker_thread(self, user_id: int, user_name: str, phrase_text: str):
@@ -159,19 +193,59 @@ class VoiceLogger:
         if await self.db.is_user_opt_out(self.guild_id, user_id):
             return
         
-        w_list = phrase_text.split()
         w_count = count_words(phrase_text)
+        if w_count == 0:
+            return
+            
+        # VAD FAILSAFE: If we transcribed words, there WAS voice activity
+        self.last_voice_time = time.time()
         
-        if w_count > 0:
-            # Instead of direct DB call, add to batch buffer
-            async with self.pending_lock:
-                self.pending_updates.append({
-                    'guild_id': self.guild_id,
-                    'user_id': user_id,
+        async with self.pending_lock:
+            # Aggregate by user
+            if user_id not in self.pending_updates:
+                self.pending_updates[user_id] = {
                     'user_name': user_name,
-                    'count': w_count,
-                    'words_list': w_list
-                })
+                    'count': 0,
+                    'words_sample': []  # Store only first 50 words as sample
+                }
+            
+            stats = self.pending_updates[user_id]
+            stats['count'] += w_count
+            stats['user_name'] = user_name
+            
+            # Limit sample to 50 words
+            words = phrase_text.split()
+            if len(stats['words_sample']) < 50:
+                stats['words_sample'].extend(words[:50 - len(stats['words_sample'])])
+            
+            # Force flush if batch too large
+            total_pending = sum(s['count'] for s in self.pending_updates.values())
+            if total_pending >= self.max_pending_updates:
+                asyncio.create_task(self._flush_words_now())
+
+    async def _flush_words_now(self):
+        """Immediate flush of pending word updates."""
+        async with self.pending_lock:
+            if not self.pending_updates:
+                return
+            
+            updates = self.pending_updates
+            self.pending_updates = {}
+        
+        # Process batches
+        for uid, stats in updates.items():
+            try:
+                await self.db.upsert_user(self.guild_id, uid, stats['user_name'])
+                await self.db.add_xp_and_words(
+                    self.guild_id,
+                    uid,
+                    stats['count'],
+                    w_text=0,
+                    w_audio=stats['count'],
+                    words_list=stats['words_sample']  # Only sample
+                )
+            except Exception as e:
+                logger.error(f"Flush error for {uid}: {e}")
 
     async def _words_flush_loop(self):
         """
@@ -180,46 +254,8 @@ class VoiceLogger:
         while self.is_recording:
             await asyncio.sleep(WORDS_FLUSH_SECONDS)
             
-            updates = []
-            async with self.pending_lock:
-                if self.pending_updates:
-                    updates = self.pending_updates
-                    self.pending_updates = []
-            
-            if not updates:
-                continue
-                
-            # Process batch
-            # Group by user to minimize DB calls further
-            user_stats = {} 
-            
-            for up in updates:
-                uid = up['user_id']
-                if uid not in user_stats:
-                    user_stats[uid] = {
-                        'name': up['user_name'],
-                        'count': 0,
-                        'words': []
-                    }
-                user_stats[uid]['count'] += up['count']
-                user_stats[uid]['words'].extend(up['words_list'])
-                # Update name to latest
-                user_stats[uid]['name'] = up['user_name']
-                
-            # Perform DB writes
-            for uid, data in user_stats.items():
-                try:
-                    await self.db.upsert_user(self.guild_id, uid, data['name'])
-                    await self.db.add_xp_and_words(
-                        self.guild_id, 
-                        uid, 
-                        data['count'], 
-                        w_text=0, 
-                        w_audio=data['count'], 
-                        words_list=data['words']
-                    )
-                except Exception as e:
-                    logger.error(f"Batch DB write error for {uid}: {e}")
+            # Use the same flush logic
+            await self._flush_words_now()
 
     # ---- start/stop ----
     async def start(self, guild: discord.Guild, voice_channel: discord.VoiceChannel, text_channel: discord.TextChannel):
@@ -444,7 +480,7 @@ class VoiceLogger:
             except asyncio.TimeoutError:
                 await self.publish_now(force=False)
 
-    async def publish_now(self, force=False):
+    async def publish_now(self, force=False, include_audio=False):
         if not self.base_dir:
             return
         self.last_publish_at = time.time()
@@ -453,9 +489,12 @@ class VoiceLogger:
             return
 
         files_to_send = []
-        mp3_path = os.path.join(self.base_dir, "last_mix.mp3")
-        if os.path.exists(mp3_path):
-            files_to_send.append(discord.File(mp3_path, filename=f"mix_{int(time.time())}.mp3"))
+        
+        # 1. MP3 file (Only if requested)
+        if include_audio:
+            mp3_path = os.path.join(self.base_dir, "last_mix.mp3")
+            if os.path.exists(mp3_path):
+                files_to_send.append(discord.File(mp3_path, filename=f"mix_{int(time.time())}.mp3"))
 
         # 2. Log file for current day
         if self.log_store:

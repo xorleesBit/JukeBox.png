@@ -46,8 +46,11 @@ class ChunkProcessor:
         self.on_after_chunk = None
         self.on_audio_phrase = on_audio_phrase
 
-        self._log_store_cache: dict[str, LogStore] = {}
+        # LogStore cache with LRU and TTL
+        self._log_store_cache: dict[str, tuple[LogStore, float]] = {}
         self._cache_lock = threading.Lock()
+        self._cache_max_size = 50
+        self._cache_ttl = 3600  # 1 hour
         
         try:
             import asyncio
@@ -60,11 +63,34 @@ class ChunkProcessor:
         logger.info("ChunkProcessor initialized.")
 
     def _get_store(self, base_dir: str) -> LogStore:
+        """Get LogStore with LRU cache and TTL."""
+        now = time.time()
+        
         with self._cache_lock:
-            st = self._log_store_cache.get(base_dir)
-            if st: return st
+            # Check if exists and not expired
+            if base_dir in self._log_store_cache:
+                st, cached_time = self._log_store_cache[base_dir]
+                
+                # Check TTL
+                if now - cached_time < self._cache_ttl:
+                    return st
+                else:
+                    # Expired, remove it
+                    self._log_store_cache.pop(base_dir)
+                    logger.debug(f"LogStore cache expired for {base_dir}")
+            
+            # Create new
             st = LogStore(base_dir)
-            self._log_store_cache[base_dir] = st
+            self._log_store_cache[base_dir] = (st, now)
+            
+            # Evict oldest if size exceeded (simple FIFO since we can't easily implement LRU in threading)
+            if len(self._log_store_cache) > self._cache_max_size:
+                # Remove oldest by timestamp
+                oldest_key = min(self._log_store_cache.keys(), 
+                               key=lambda k: self._log_store_cache[k][1])
+                self._log_store_cache.pop(oldest_key)
+                logger.debug(f"LogStore cache evicted oldest: {oldest_key}")
+            
             return st
 
     def start(self):

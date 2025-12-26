@@ -24,6 +24,7 @@ class ProgressionCog(commands.Cog):
 
         for guild in self.bot.guilds:
             for channel in guild.voice_channels:
+                if not channel.members: continue
                 # Ignore AFK channels usually
                 if guild.afk_channel and channel.id == guild.afk_channel.id:
                     continue

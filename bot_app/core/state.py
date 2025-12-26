@@ -9,10 +9,11 @@ if TYPE_CHECKING:
     import aiohttp
 
 from bot_app.core.dev_manager import dev_manager
+from bot_app.core.lru_cache import LRUCacheWithTTL
 
 # Global State Containers
 loggers: dict[int, "VoiceLogger"] = {}
-settings_cache: dict[int, "RuntimeSettings"] = {}
+settings_cache: LRUCacheWithTTL = LRUCacheWithTTL(max_size=100, ttl_seconds=3600, name="SettingsCache")
 user_spam_cooldowns: dict[int, float] = {}
 tasks: list[asyncio.Task] = []
 
@@ -20,21 +21,33 @@ tasks: list[asyncio.Task] = []
 db: "AppDB | None" = None
 http_session: "aiohttp.ClientSession | None" = None
 
-def get_settings(guild_id: int) -> "RuntimeSettings":
+async def get_settings(guild_id: int) -> "RuntimeSettings":
     """
-    Retrieves or creates RuntimeSettings for a guild.
+    Retrieves or creates RuntimeSettings for a guild with LRU caching.
     Ensure 'db' is set before calling this.
     """
     from bot_app.core.runtime_settings import RuntimeSettings  # Local import to avoid circular dependency
     
-    s = settings_cache.get(guild_id)
-    if not s:
-        if not db:
-            raise RuntimeError("Database not initialized in state")
-        s = RuntimeSettings(db, guild_id)
-        asyncio.create_task(s.load())
-        settings_cache[guild_id] = s
+    # Try cache first
+    s = await settings_cache.get(guild_id)
+    if s:
+        return s
+    
+    # Create new
+    if not db:
+        raise RuntimeError("Database not initialized in state")
+    
+    s = RuntimeSettings(db, guild_id)
+    await s.load()
+    await settings_cache.set(guild_id, s)
+    
     return s
+
+async def cleanup_expired_caches():
+    """Periodic cleanup of expired cache entries."""
+    while True:
+        await asyncio.sleep(600)  # Every 10 minutes
+        await settings_cache.clear_expired()
 
 class AppWrapper:
     """
@@ -45,8 +58,8 @@ class AppWrapper:
         self.db = db_instance
         self.loggers = loggers
 
-    def get_settings(self, gid: int):
-        return get_settings(gid)
+    async def get_settings(self, gid: int):
+        return await get_settings(gid)
 
     async def ensure_logger_started(self, interaction: "discord.Interaction"):
         # This will be monkey-patched or imported from voice_control to avoid circular imports

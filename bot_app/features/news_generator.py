@@ -47,6 +47,14 @@ async def generate_news_json(guild_id: int, guild_name: str, days: int = 1) -> d
                         if not line or "Sink received" in line or "Processing chunk" in line: continue
                         if len(line) > 11 and line[4] == '-' and line[7] == '-':
                             line = line[11:] 
+                        
+                        # FILTER CONTEXT FOR AI
+                        l_low = line.lower()
+                        if "joined the channel" in l_low or "left the channel" in l_low or "зашел" in l_low or "вышел" in l_low:
+                            continue
+                        if ": !" in line or ": /" in line:
+                            continue
+                            
                         day_lines.append(f"[{date_str}] {line}")
                 
                 # Take last 500 lines per day
@@ -57,8 +65,8 @@ async def generate_news_json(guild_id: int, guild_name: str, days: int = 1) -> d
     if not found_any:
         return {"error": f"Логи за последние {days} дней не найдены."}
 
-    if len(collected_lines) < 10:
-        return {"error": "Слишком мало событий для анализа."}
+    if len(collected_lines) < 5: # Lower threshold after filtering
+        return {"error": "Слишком мало событий для анализа (после фильтрации команд и входов)."}
 
     # Global Limit: 25k chars to be safe
     full_text = "\n".join(collected_lines)

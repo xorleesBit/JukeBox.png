@@ -43,6 +43,20 @@ class AIFunCog(commands.Cog):
         if not logs or len(logs) < 50:
              return await msg.edit(content="❌ Слишком мало данных в логах (нужно общение в голосе или чате за последние 5 дней).")
 
+        # FILTER LOGS FOR AI CONTEXT
+        # Remove system events (joined/leaf) and commands
+        filtered_lines = []
+        for line in logs.split('\n'):
+            lower_line = line.lower()
+            if "joined the channel" in lower_line or "left the channel" in lower_line or "зашел" in lower_line or "вышел" in lower_line:
+                continue
+            # Remove commands (assuming format: "User: !cmd" or "User: /cmd")
+            if ": !" in line or ": /" in line:
+                continue
+            filtered_lines.append(line)
+        
+        clean_logs = "\n".join(filtered_lines)
+
         # 2. Charge
         if not bypass:
             await self.bot.db.update_balance(ctx.guild.id, ctx.author.id, -cost)
@@ -60,7 +74,7 @@ class AIFunCog(commands.Cog):
             "Отвечай на русском."
         )
         
-        user_prompt = f"Пользователь: {target.display_name}\nЛоги:\n{logs}\n\nПрожарка:"
+        user_prompt = f"Пользователь: {target.display_name}\nЛоги:\n{clean_logs}\n\nПрожарка:"
         
         response = await ask_ai(user_prompt, sys_prompt)
         
@@ -103,7 +117,19 @@ class AIFunCog(commands.Cog):
             "3. Если контекст непонятен, придумай общую шутку про Discord или геймеров.\n"
             "4. Важно: Шутка должна быть позитивной. Без сарказма и негатива."
         )
-        user_prompt = f"Пользователь: {target.display_name}\nЕго реплики:\n{logs}\n\nШутка:"
+        # FILTER LOGS FOR AI CONTEXT
+        filtered_lines = []
+        for line in logs.split('\n'):
+            lower_line = line.lower()
+            if "joined the channel" in lower_line or "left the channel" in lower_line or "зашел" in lower_line or "вышел" in lower_line:
+                continue
+            if ": !" in line or ": /" in line:
+                continue
+            filtered_lines.append(line)
+        
+        clean_logs = "\n".join(filtered_lines)
+        
+        user_prompt = f"Пользователь: {target.display_name}\nЕго реплики:\n{clean_logs}\n\nШутка:"
         
         response = await ask_ai(user_prompt, sys_prompt)
         
@@ -143,12 +169,20 @@ class AIFunCog(commands.Cog):
         now_str = datetime.datetime.now().strftime("%Y-%m") # 2025-12
         
         summaries = []
-        for f in os.listdir(archive_path):
-            if f.endswith("_summary.md") and now_str in f:
-                try:
-                    with open(os.path.join(archive_path, f), "r", encoding="utf-8") as md:
-                        summaries.append(md.read())
-                except: pass
+        # Helper to read files in thread
+        def read_summaries():
+            res = []
+            if os.path.exists(archive_path):
+                for f in os.listdir(archive_path):
+                    if f.endswith("_summary.md") and now_str in f:
+                        try:
+                            with open(os.path.join(archive_path, f), "r", encoding="utf-8") as md:
+                                res.append(md.read())
+                        except: pass
+            return res
+
+        import asyncio
+        summaries = await asyncio.to_thread(read_summaries)
                 
         if not summaries:
             return await msg.edit(content="❌ Нет данных за этот месяц (возможно, архивация еще не прошла).")

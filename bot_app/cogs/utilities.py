@@ -3,6 +3,7 @@ from discord.ext import commands, tasks
 import time
 import re
 from bot_app.core.dev_manager import dev_manager
+from bot_app.core.metrics import collect_metrics, format_metrics
 
 class UtilitiesCog(commands.Cog):
     def __init__(self, bot):
@@ -88,6 +89,45 @@ class UtilitiesCog(commands.Cog):
     @remind_loop.before_loop
     async def before_remind(self):
         await self.bot.wait_until_ready()
+    
+    # --- Metrics Command ---
+    # --- Metrics Command ---
+    @commands.command(name="metrics", aliases=["stats", "метрики"])
+    async def cmd_metrics(self, ctx):
+        """Показать метрики бота (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) - ответ в ЛС"""
+        # Security check
+        if not dev_manager.is_owner(ctx.author.id):
+             # Silently ignore or pretend command doesn't exist
+             return
+        
+        metrics = await collect_metrics(self.bot)
+        
+        e = discord.Embed(title="📊 Метрики бота", color=discord.Color.blue())
+        e.add_field(name="🏛️ Серверы", value=f"{metrics.active_guilds}", inline=True)
+        e.add_field(name="🎙️ Логгеры", value=f"{metrics.active_loggers}", inline=True)
+        e.add_field(name="⏳ Очередь", value=f"{metrics.queue_size}", inline=True)
+        e.add_field(name="💾 Память", value=f"{metrics.memory_mb:.1f} MB", inline=True)
+        e.add_field(name="💻 CPU", value=f"{metrics.cpu_percent:.1f}%", inline=True)
+        
+        if metrics.db_pool_size > 0:
+            db_used = metrics.db_pool_size - metrics.db_pool_free
+            e.add_field(
+                name="📦 DB Pool", 
+                value=f"{db_used}/{metrics.db_pool_size} used", 
+                inline=True
+            )
+        
+        e.set_footer(text=format_metrics(metrics))
+        
+        # Send to DM
+        try:
+            await ctx.author.send(embed=e)
+            if ctx.guild:
+                try: await ctx.message.delete()
+                except: pass
+        except discord.Forbidden:
+            if ctx.guild:
+                await ctx.send("❌ Не могу отправить ЛС.", delete_after=5)
 
 async def setup(bot):
     await bot.add_cog(UtilitiesCog(bot))

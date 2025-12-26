@@ -22,7 +22,7 @@ async def create_panel_in_channel(guild: discord.Guild, channel: discord.TextCha
         return None
 
     view = ControlPanelView(AppWrapper(db), guild.id)
-    settings = get_settings(guild.id)
+    settings = await get_settings(guild.id)
     await settings.load()
     logger = loggers.get(guild.id)
     stats = await db.count_phrases(guild.id)
@@ -90,7 +90,7 @@ async def ensure_panel_logic(bot: discord.Client, guild: discord.Guild, db, forc
                     raise Exception("Panel too old, recreating")
 
                 # Try to edit
-                settings = get_settings(guild.id)
+                settings = await get_settings(guild.id)
                 await settings.load()
                 logger = loggers.get(guild.id)
                 stats = await db.count_phrases(guild.id)

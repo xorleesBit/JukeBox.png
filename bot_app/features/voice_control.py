@@ -16,7 +16,7 @@ async def ensure_logger_started(interaction: discord.Interaction, db):
     if logger and logger.is_recording: 
         return
 
-    settings = get_settings(g.id)
+    settings = await get_settings(g.id)
     # Pass 'bot' from interaction.client
     logger = VoiceLogger(interaction.client, guild_id=g.id, text_channel_id=interaction.channel.id, db=db, settings=settings)
     loggers[g.id] = logger

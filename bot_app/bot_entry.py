@@ -14,6 +14,12 @@ from .core import audio_setup
 from .core import state
 from .features import panel_control
 
+# New optimized imports
+from .core.http_pool import HTTPSessionPool
+from .core.rate_limiter import APIRateLimiter
+from .features.memory_monitor import MemoryMonitor
+from .core.metrics import collect_metrics, format_metrics
+
 # --- Logging ---
 logging.basicConfig(
     level=logging.INFO,
@@ -36,10 +42,25 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=CustomHelpC
 DSN = os.getenv("DATABASE_URL", "postgresql://postgres:80013002@localhost:5432/logerbot_db")
 app_db = AppDB(DSN)
 
+# HTTP Session Pool
+http_pool = HTTPSessionPool(max_connections_per_host=10, total_connections=100)
+
+# Rate Limiters for APIs
+azure_rate_limiter = APIRateLimiter(max_requests=15, time_window=1.0, name="Azure_STT")
+assembly_rate_limiter = APIRateLimiter(max_requests=10, time_window=1.0, name="Assembly_STT")
+
+# Memory Monitor
+memory_monitor = MemoryMonitor(warning_threshold_mb=1024, critical_threshold_mb=2048)
+
 # Inject Global State
 state.db = app_db
 bot.db = app_db
 bot.loggers = state.loggers
+bot.http_pool = http_pool
+bot.azure_rate_limiter = azure_rate_limiter
+bot.assembly_rate_limiter = assembly_rate_limiter
+bot.memory_monitor = memory_monitor
+
 # Helper lambda to match old interface if cogs use it
 bot.get_settings = state.get_settings
 # Inject panel logic for reuse if needed (though it's better to import)
@@ -49,10 +70,14 @@ bot.ensure_panel_func = lambda g, force_create_channel=False: panel_control.ensu
 
 @bot.event
 async def on_ready():
-    # Initialize Global HTTP Session
+    # Initialize Global HTTP Session from pool
     if state.http_session is None or state.http_session.closed:
-        state.http_session = aiohttp.ClientSession()
+        state.http_session = await http_pool.get_session()
         print("✅ Global HTTP Session initialized")
+    
+    # Start Memory Monitor
+    memory_monitor.start()
+    print("✅ Memory Monitor started")
 
     # 0. Sync Owner Info
     if not state.dev_manager.OWNER_IDS:
@@ -66,8 +91,10 @@ async def on_ready():
     print(f"✅ LogerBot v3.0 Started as {bot.user}")
     
     try:
-        await app_db.connect()
-        print("✅ Database Connected")
+        # Connect DB with dynamic pool sizing
+        servers_count = len(bot.guilds)
+        await app_db.connect(servers_count=servers_count)
+        print(f"✅ Database Connected (optimized for {servers_count} servers)")
     except Exception as e:
         print(f"❌ DB Error: {e}")
         return
@@ -87,6 +114,8 @@ async def on_ready():
         "bot_app.cogs.fun",
         "bot_app.cogs.ai_fun",
         "bot_app.cogs.shop",
+        "bot_app.cogs.games",
+        "bot_app.cogs.help", # Custom Help
     ]
 
     for ext in initial_extensions:
@@ -99,10 +128,23 @@ async def on_ready():
     # Setup Audio
     audio_setup.setup_audio_libraries()
     
+    # Configure STT rate limiters
+    from bot_app.integrations.stt_async import set_rate_limiters
+    set_rate_limiters(azure_rate_limiter, assembly_rate_limiter)
+    print("✅ STT rate limiters configured")
+    
     # Start Log Archiver
     from bot_app.features.log_archiver import LogArchiver
     bot.archiver = LogArchiver(bot)
     asyncio.create_task(bot.archiver.start())
+    
+    # Start cache cleanup task
+    asyncio.create_task(state.cleanup_expired_caches())
+    print("✅ Cache cleanup task started")
+    
+    # Start metrics logging task
+    asyncio.create_task(metrics_logger_task())
+    print("✅ Metrics logger started")
 
     print("🔄 Restoring state...")
     state.loggers.clear()
@@ -124,6 +166,23 @@ async def on_ready():
         # We start background task for panel logic to not block on_ready too long
         asyncio.create_task(panel_control.ensure_panel_logic(bot, g, app_db, force_create_channel=False))
 
+async def metrics_logger_task():
+    """Periodic metrics logging."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    await asyncio.sleep(60)  # Wait 1 minute before first log
+    while True:
+        try:
+            metrics = await collect_metrics(bot)
+            logger.info(f"📊 Metrics: {format_metrics(metrics)}")
+            await asyncio.sleep(300)  # Every 5 minutes
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Metrics collection error: {e}")
+            await asyncio.sleep(300)
+
 import signal
 
 # --- Entry Point ---
@@ -135,26 +194,41 @@ async def shutdown_handler(signal_type):
     if hasattr(bot, 'loggers'):
         print(f"   Stopping {len(bot.loggers)} active loggers...")
         # Use gather to stop parallel
-        await asyncio.gather(*[l.stop() for l in bot.loggers.values()])
+        await asyncio.gather(*[l.stop() for l in bot.loggers.values()], return_exceptions=True)
     
-    # 2. Wait for Workers to finish queue
+    # 2. Wait for Workers to finish queue (with timeout)
     if hasattr(bot, 'loggers'):
-        print("   Waiting for processors to finish pending jobs (this may take time)...")
-        # We need to run this in a thread executor because join() blocks
+        print("   Waiting for processors to finish pending jobs (max 30s)...")
         loop = asyncio.get_running_loop()
+        tasks = []
         for l in bot.loggers.values():
             if hasattr(l, 'processor'):
-                await loop.run_in_executor(None, l.processor.join)
+                l.processor.stop(timeout=30.0)
+                tasks.append(loop.run_in_executor(None, l.processor.join, 30.0))
+        
+        try:
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=35.0)
+        except asyncio.TimeoutError:
+            print("   ⚠️ Some processors did not stop in time")
     
     # 3. Close DB
     if hasattr(bot, 'db'):
         print("   Closing Database...")
         await bot.db.close()
-
-    # 4. Close HTTP Session
+    
+    # 4. Close HTTP Pool
+    if hasattr(bot, 'http_pool'):
+        print("   Closing HTTP Pool...")
+        await bot.http_pool.close()
+    
+    # Also close legacy session if exists
     if state.http_session and not state.http_session.closed:
-        print("   Closing HTTP Session...")
         await state.http_session.close()
+    
+    # 5. Stop Memory Monitor
+    if hasattr(bot, 'memory_monitor'):
+        print("   Stopping Memory Monitor...")
+        await bot.memory_monitor.stop()
         
     print("👋 Graceful shutdown complete. Bye!")
     # Force exit to kill daemon threads

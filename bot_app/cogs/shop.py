@@ -117,18 +117,15 @@ class ShopCog(commands.Cog):
         if buffs:
             txt = ""
             import time
+            # Optimization: Pre-calculate map
+            buff_map = {i.buff_id: i for i in ITEMS.values() if i.buff_id}
+            
             for b in buffs:
-                # Need to find name from buff_id mapping? 
-                # Reversing mapping is hard, let's just use ID or search
-                # Optimization: In real app, store ItemID in buffs or Name.
-                # Here we loop ITEMS to find match buff_id
-                name = b['buff_id']
-                emoji = "✨"
-                for i in ITEMS.values():
-                    if i.buff_id == b['buff_id']:
-                        name = i.name
-                        emoji = i.emoji
-                        break
+                bid = b['buff_id']
+                item = buff_map.get(bid)
+                
+                name = item.name if item else bid
+                emoji = item.emoji if item else "✨"
                 
                 txt += f"{emoji} **{name}**: <t:{int(b['expires_at'])}:R>\n"
             embed.add_field(name="Активные Эффекты", value=txt, inline=False)
