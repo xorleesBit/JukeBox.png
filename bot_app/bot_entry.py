@@ -19,6 +19,9 @@ from .core.http_pool import HTTPSessionPool
 from .core.rate_limiter import APIRateLimiter
 from .features.memory_monitor import MemoryMonitor
 from .core.metrics import collect_metrics, format_metrics
+from .features.profile_manager import ProfileManager
+from .features.context_manager import ContextManager
+from .features.ai_manager import AIManager
 
 # --- Logging ---
 logging.basicConfig(
@@ -52,14 +55,26 @@ assembly_rate_limiter = APIRateLimiter(max_requests=10, time_window=1.0, name="A
 # Memory Monitor
 memory_monitor = MemoryMonitor(warning_threshold_mb=1024, critical_threshold_mb=2048)
 
+# Initialize Features
+profile_manager = ProfileManager(app_db)
+context_manager = ContextManager(bot)
+ai_manager = AIManager(app_db)
+
 # Inject Global State
 state.db = app_db
+state.profile_manager = profile_manager
+state.context_manager = context_manager
+state.ai_manager = ai_manager
+
 bot.db = app_db
 bot.loggers = state.loggers
 bot.http_pool = http_pool
 bot.azure_rate_limiter = azure_rate_limiter
 bot.assembly_rate_limiter = assembly_rate_limiter
 bot.memory_monitor = memory_monitor
+bot.profile_manager = profile_manager
+bot.context_manager = context_manager
+bot.ai_manager = ai_manager
 
 # Helper lambda to match old interface if cogs use it
 bot.get_settings = state.get_settings
@@ -81,6 +96,11 @@ async def on_ready():
     # Start Memory Monitor
     memory_monitor.start()
     print("✅ Memory Monitor started")
+
+    # Load AI Config
+    if state.ai_manager:
+        await state.ai_manager.load()
+        print(f"✅ AI Config loaded: {state.ai_manager.current_provider}")
 
     # 0. Sync Owner Info
     if not state.dev_manager.OWNER_IDS:
@@ -237,7 +257,7 @@ async def shutdown_handler(signal_type):
     # Force exit to kill daemon threads
     os._exit(0)
 
-async def main():
+async def main(token):
     # Setup Signal Handlers
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -250,7 +270,7 @@ async def main():
 
     async with bot:
         try:
-            await bot.start(TOKEN)
+            await bot.start(token)
         except KeyboardInterrupt:
             # Fallback if signal handler didn't catch (e.g. Windows sometimes)
             await shutdown_handler("KeyboardInterrupt")
@@ -259,9 +279,18 @@ async def main():
             # We already handle shutdown above, but just in case
             pass
 
-def run():
-    if not TOKEN: 
-        raise RuntimeError("No Token")
+def run(debug_mode=False):
+    token = os.getenv("DISCORD_BOT_TOKEN_DEBUG") if debug_mode else os.getenv("DISCORD_BOT_TOKEN")
+    
+    if debug_mode:
+        print("🐞 DEBUG MODE ACTIVATED")
+        if not token:
+            print("❌ DISCORD_BOT_TOKEN_DEBUG not found in .env")
+            return
+    
+    if not token: 
+        raise RuntimeError("No Token found")
+        
     try: 
         if sys.platform == 'win32':
             # Windows specific policy for signals
@@ -275,7 +304,7 @@ def run():
             except ImportError:
                 print("⚠️ uvloop not installed, using default asyncio loop")
 
-        asyncio.run(main())
+        asyncio.run(main(token))
     except KeyboardInterrupt: 
         pass
 

@@ -50,6 +50,11 @@ class EventsCog(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if not member.guild: return
+        
+        # Update Game Context
+        if hasattr(self.bot, 'context_manager') and after.channel:
+             await self.bot.context_manager.update_presence(member.guild, after.channel)
+        
         l = loggers.get(member.guild.id)
         if not l or not l.is_recording: return
         
@@ -64,6 +69,11 @@ class EventsCog(commands.Cog):
     @commands.Cog.listener()
     async def on_presence_update(self, before, after):
         if not after.guild: return
+        
+        # Update Game Context
+        if hasattr(self.bot, 'context_manager') and after.voice and after.voice.channel:
+             await self.bot.context_manager.update_presence(after.guild, after.voice.channel)
+             
         logger = loggers.get(after.guild.id)
         if not logger or not logger.is_recording: return
         

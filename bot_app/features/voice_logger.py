@@ -79,7 +79,11 @@ class VoiceLogger:
         self.prank: PrankManager | None = None
         self.sampler: PrankSampler | None = None
 
-        self.processor = ChunkProcessor(on_audio_phrase=self._on_audio_phrase_from_worker_thread)
+        cm = getattr(self.bot, 'context_manager', None)
+        self.processor = ChunkProcessor(
+            on_audio_phrase=self._on_audio_phrase_from_worker_thread,
+            context_manager=cm
+        )
         
         # Safe callback wrapper for thread-to-async communication
         self.processor.on_after_chunk = self._safe_callback_wrapper(self._handle_chunk_complete)
@@ -304,7 +308,7 @@ class VoiceLogger:
                 self.sampler.feed(uid, ts, pcm)
 
         self.sink = TimeStampedSink(
-            is_paused_callable=lambda: self.is_paused,
+            is_paused_callable=lambda: self.is_paused or self.is_prank_playing,
             ignore_user_ids=ignore_ids,
             on_pcm=on_pcm_wrapper,
             should_forward_pcm=(lambda: bool(self.prank and self.prank.should_accept_pcm())) if self.prank else None,

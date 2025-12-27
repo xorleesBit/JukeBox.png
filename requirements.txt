@@ -12,4 +12,5 @@ psutil
 assemblyai
 aiohttp
 uvloop
+google-generativeai
 

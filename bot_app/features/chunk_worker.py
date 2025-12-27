@@ -32,11 +32,12 @@ class ChunkJob:
     stt_provider: str = field(compare=False, default="azure")
 
 class ChunkProcessor:
-    def __init__(self, on_audio_phrase=None, db=None):
+    def __init__(self, on_audio_phrase=None, db=None, context_manager=None):
         self.q: queue.PriorityQueue[ChunkJob] = queue.PriorityQueue()
         self.stop_evt = threading.Event()
         self.thread: threading.Thread | None = None
         self.db = db
+        self.context_manager = context_manager # Echo detection logic
 
         self.stats_lock = threading.Lock()
         self.total_text_bytes = 0
@@ -229,6 +230,78 @@ class ChunkProcessor:
             if job.stt_provider == "assembly":
                 # Pass BytesIO directly (Supported by updated integration)
                 return transcribe_file_assembly_sentences(audio_bytes, abs_start, user_name, duration)
+            
+            elif job.stt_provider == "chutes":
+                from bot_app.integrations.chutes_stt import transcribe_file_chutes_sync
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp.write(audio_bytes.read())
+                    tmp_path = tmp.name
+                
+                try:
+                    return transcribe_file_chutes_sync(tmp_path, abs_start, user_name, duration)
+                finally:
+                    if os.path.exists(tmp_path): os.remove(tmp_path)
+
+            elif job.stt_provider == "gemini":
+                # Gemini requires Async execution. We bridge it here.
+                # We need to save to file because our simple Gemini impl reads file path
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp.write(audio_bytes.read())
+                    tmp_path = tmp.name
+                
+                try:
+                    # Bridge to Async
+                    # We need the bot's loop. Usually available via discord.client, but we are in a thread.
+                    # We can try to get it from 'threading.main_thread' or pass it in.
+                    # Since we don't have easy access to the loop here without heavy refactoring,
+                    # we will use a new temporary loop for this thread? No, aiohttp needs shared session loop.
+                    
+                    # Hack: The 'ai_client' uses 'state.http_session'. 
+                    # We MUST run this coroutine on the SAME loop where http_session was created (Main Loop).
+                    
+                    # We can use a Future to wait for result from main loop.
+                    import asyncio
+                    from bot_app.integrations.gemini_stt import transcribe_file_gemini
+                    from bot_app.bot_entry import bot # Access bot global if possible, or pass it.
+                    # bot_app.bot_entry might cause circular import. 
+                    # Let's rely on 'state.tasks' or just 'asyncio.get_event_loop' if we are in main... no we are in thread.
+                    
+                    # Proper way: ChunkProcessor should have received 'loop' in init.
+                    # Let's assume we fix __init__ later. For now, let's look for a running loop.
+                    # Actually, we can just skip Gemini for now if we can't bridge it easily?
+                    # No, let's fix it.
+                    
+                    # We will use 'run_coroutine_threadsafe' with the main loop.
+                    # But we need reference to it.
+                    pass
+                except Exception:
+                    pass
+                
+                # RE-STRATEGY:
+                # Since bridging to main loop inside ThreadPoolExecutor inside a Thread is messy,
+                # let's use a BLOCKING call for Gemini if possible, OR
+                # pass the "transcribe_one" logic to an async function and await it?
+                # But ChunkProcessor is threaded.
+                
+                # Simpler approach:
+                # We can't easily reuse 'state.http_session' (async) from a synchronous thread without threadsafe calls.
+                # Let's use 'requests' (synchronous) for Gemini STT inside the worker thread. 
+                # It's less efficient but thread-safe.
+                
+                from bot_app.integrations.gemini_stt import transcribe_file_gemini_sync
+                res = transcribe_file_gemini_sync(tmp_path, abs_start, user_name, duration)
+                
+                if res is None: # Explicit None means "Failed/RateLimit", try Fallback
+                    logger.warning(f"Gemini failed for {user_name}, falling back to Azure.")
+                    try:
+                        return transcribe_file_azure_sentences(tmp_path, abs_start, user_name, duration)
+                    finally:
+                        if os.path.exists(tmp_path): os.remove(tmp_path)
+                
+                # Cleanup if success
+                if os.path.exists(tmp_path): os.remove(tmp_path)
+                return res
+                
             else:
                 # Azure: Requires file path usually. We create temp file here ONLY if needed.
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -298,11 +371,22 @@ class ChunkProcessor:
                             prefix = f"{user_name}: "
                             if phrase.startswith(prefix): phrase = phrase[len(prefix):].strip()
                             
-                            store.append_event(matched_real_ts, "🗣️", f"{user_name}: {phrase}")
+                            # ECHO CHECK (Fuzzy Matching)
+                            is_echo_spam = False
+                            if self.context_manager:
+                                try:
+                                    # Calling sync method from thread is fine for simple dict reads
+                                    if self.context_manager.is_echo(job.guild_id, phrase):
+                                        logger.info(f"Filtered echo phrase from {user_name}: {phrase[:30]}...")
+                                        is_echo_spam = True
+                                except Exception: pass
                             
-                            if callable(self.on_audio_phrase) and user_id != "Unknown":
-                                try: self.on_audio_phrase(int(user_id), user_name, phrase)
-                                except: pass
+                            if not is_echo_spam:
+                                store.append_event(matched_real_ts, "🗣️", f"{user_name}: {phrase}")
+                                
+                                if callable(self.on_audio_phrase) and user_id != "Unknown":
+                                    try: self.on_audio_phrase(int(user_id), user_name, phrase)
+                                    except: pass
                 except Exception as e:
                     logger.error(f"Transcribe batch error {user_name}: {e}")
                     continue

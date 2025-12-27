@@ -183,14 +183,23 @@ class DebugView(discord.ui.View):
         settings = await self.bot.get_settings(self.target_guild_id) if self.target_guild_id else None
         current_stt = settings.get_string("stt_provider") or "azure" if settings else "N/A"
         
+        style = discord.ButtonStyle.success if current_stt == "azure" else discord.ButtonStyle.primary
+        if current_stt == "gemini": style = discord.ButtonStyle.danger
+        if current_stt == "chutes": style = discord.ButtonStyle.secondary
+        
         btn_stt = discord.ui.Button(
             label=f"STT: {current_stt.upper()}", 
-            style=discord.ButtonStyle.success if current_stt == "azure" else discord.ButtonStyle.primary,
+            style=style,
             row=1,
             disabled=(not settings)
         )
         async def stt_cb(i):
-            new_stt = "assembly" if current_stt == "azure" else "azure"
+            # Cycle: azure -> assembly -> gemini -> chutes -> azure
+            if current_stt == "azure": new_stt = "assembly"
+            elif current_stt == "assembly": new_stt = "gemini"
+            elif current_stt == "gemini": new_stt = "chutes"
+            else: new_stt = "azure"
+            
             settings.set_string("stt_provider", new_stt)
             await self._show_actions(i) # Refresh
         btn_stt.callback = stt_cb

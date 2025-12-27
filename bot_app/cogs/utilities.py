@@ -92,7 +92,7 @@ class UtilitiesCog(commands.Cog):
     
     # --- Metrics Command ---
     # --- Metrics Command ---
-    @commands.command(name="metrics", aliases=["stats", "метрики"])
+    @commands.command(name="metrics", aliases=["метрики"])
     async def cmd_metrics(self, ctx):
         """Показать метрики бота (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) - ответ в ЛС"""
         # Security check

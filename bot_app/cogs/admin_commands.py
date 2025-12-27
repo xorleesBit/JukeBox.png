@@ -5,6 +5,8 @@ import logging
 import datetime
 from discord.ext import commands
 from bot_app.core.config import PHRASES_DIR, LOG_DIR
+from bot_app.ui.ai_config_menu import AIConfigView, build_ai_embed
+from bot_app.core.dev_manager import dev_manager
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +15,15 @@ class AdminCommands(commands.Cog):
         self.bot = bot
         self.db = bot.db
         self.loggers = bot.loggers
+
+    @commands.command(name="ai_setup")
+    async def ai_setup_cmd(self, ctx):
+        """Меню настройки AI (Провайдер/Модель). Только для владельца."""
+        is_owner = await self.bot.is_owner(ctx.author) or ctx.author.id in dev_manager.OWNER_IDS
+        if not is_owner:
+            return await ctx.send("⛔ Только для владельца бота.", delete_after=5)
+            
+        await ctx.send(embed=build_ai_embed(), view=AIConfigView())
 
     @commands.command(name="setup_panel", hidden=True)
     @commands.has_permissions(administrator=True)

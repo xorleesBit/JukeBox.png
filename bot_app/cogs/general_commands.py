@@ -65,53 +65,36 @@ class GeneralCommands(commands.Cog):
             desc += f"**{i}.** {name} — 🎖️ {r['level']} | ⭐ {r['rating']} | 💰 {r['balance']}\n"
         await ctx.send(embed=discord.Embed(title="🏆 Топ Лидеров", description=desc, color=discord.Color.gold()), delete_after=180)
 
-    @commands.command(name="profile")
-    async def cmd_profile(self, ctx, member: discord.Member = None):
+    @commands.command(name="stats", aliases=["stat", "me"])
+    async def cmd_stats(self, ctx, member: discord.Member = None):
+        """Показать статистику (XP, баланс, уровень)."""
         target = member or ctx.author
-        u_data = await self.db.get_user(ctx.guild.id, target.id)
-        if not u_data: return await ctx.send(embed=discord.Embed(description="Профиль не найден.", color=discord.Color.red()))
-        p_data = await self.db.get_profile(ctx.guild.id, target.id)
         
-        e = discord.Embed(title=f"👤 Профиль: {target.display_name}", color=target.color or discord.Color.blurple())
+        user_data = await self.db.get_user(ctx.guild.id, target.id)
+        if not user_data:
+            # Init if missing
+            await self.db.upsert_user(ctx.guild.id, target.id, target.display_name)
+            user_data = await self.db.get_user(ctx.guild.id, target.id)
+            
+        e = discord.Embed(title=f"📊 Статистика: {target.display_name}", color=discord.Color.green())
         e.set_thumbnail(url=target.display_avatar.url)
         
-        lvl = u_data['level'] or 1
-        xp = u_data['xp'] or 0
-        bal = u_data['balance'] or 0
-        rat = u_data['rating'] or 1000
-        stats = f"🎖️ **Уровень:** {lvl} ({xp} XP)\n💰 **Баланс:** {bal}\n⭐ **Рейтинг:** {rat}"
-        e.add_field(name="Статистика", value=stats, inline=False)
+        # Level Bar logic
+        xp = user_data['xp']
+        lvl = user_data['level']
+        next_xp = (lvl ** 2) * 150
         
-        if p_data:
-            pers = p_data.get('personality', 'Не определено')
-            e.add_field(name="🧠 Характер", value=pers, inline=False)
-            interests = p_data.get('interests', [])
-            if interests: e.add_field(name="💡 Интересы", value=", ".join(interests)[:1024], inline=True)
-            games = p_data.get('games', [])
-            if games: e.add_field(name="🎮 Игры", value=", ".join(games)[:1024], inline=True)
-            phrases = p_data.get('favorite_phrases', [])
-            if phrases:
-                ph_text = "\n".join([f"• {p}" for p in phrases[:5]])
-                e.add_field(name="🗣️ Любимые фразы", value=ph_text[:1024], inline=False)
-            relations = p_data.get('relations', {})
-            if relations:
-                rel_list = []
-                for k, v in relations.items():
-                    if k.isdigit(): rel_list.append(f"<@{k}>: {v}")
-                    else: rel_list.append(f"**{k}**: {v}")
-                e.add_field(name="💞 Отношения", value="\n".join(rel_list)[:1024], inline=False)
-            
-            achievements = p_data.get('achievements', [])
-            if achievements:
-                last_3 = achievements[-3:]
-                ach_list = [f"🏅 **{a.get('title')}**: {a.get('desc')}" for a in last_3]
-                e.add_field(name=f"🏆 Достижения ({len(achievements)})", value="\n".join(ach_list), inline=False)
-        else:
-             # Just init variable if no profile
-             achievements = []
-
-        # Interactive View for Profile
-        class ProfileView(discord.ui.View):
+        e.add_field(name="Уровень", value=f"**{lvl}** ({xp}/{next_xp} XP)", inline=True)
+        e.add_field(name="Баланс", value=f"💰 {user_data['balance']}", inline=True)
+        e.add_field(name="Рейтинг", value=f"📈 {user_data['rating']}", inline=True)
+        
+        # Word stats
+        w_text = user_data['words_text_total']
+        w_audio = user_data['words_audio_total']
+        e.add_field(name="Слов сказано", value=f"💬 {w_text} (чат) | 🎤 {w_audio} (войс)", inline=False)
+        
+        # Interactive View for Stats (Renamed from ProfileView inside this command)
+        class StatsViewInternal(discord.ui.View):
             def __init__(self, bot, guild_id, user_id):
                 super().__init__(timeout=60)
                 self.bot = bot
@@ -126,7 +109,6 @@ class GeneralCommands(commands.Cog):
 
             @discord.ui.button(label="Инвентарь", emoji="🎒", style=discord.ButtonStyle.secondary)
             async def btn_inv(self, interaction: discord.Interaction, _):
-                from bot_app.ui.inventory_menu import InventoryView
                 from bot_app.ui.inventory_menu import InventoryView as InventoryViewUI
                 view = InventoryViewUI(self.bot.db, self.guild_id, interaction.user.id)
                 await view.send_ephemeral(interaction)
@@ -134,7 +116,7 @@ class GeneralCommands(commands.Cog):
             @discord.ui.button(label="Daily", emoji="🎁", style=discord.ButtonStyle.success)
             async def btn_daily(self, interaction: discord.Interaction, button: discord.ui.Button):
                 if interaction.user.id != self.user_id:
-                     return await interaction.response.send_message("Это не ваш профиль.", ephemeral=True)
+                     return await interaction.response.send_message("Это не ваша статистика.", ephemeral=True)
                 
                 # Check Last Daily
                 last_daily = await self.bot.db.get_last_daily(self.guild_id, self.user_id)
@@ -154,10 +136,10 @@ class GeneralCommands(commands.Cog):
                     await interaction.response.edit_message(view=self)
                     await interaction.followup.send(f"🎁 Вы получили ежедневный бонус: **{bonus} монет**!", ephemeral=True)
 
-        # Show buttons only if viewing own profile 
+        # Show buttons only if viewing own stats
         view = None
         if ctx.author.id == target.id:
-            view = ProfileView(self.bot, ctx.guild.id, ctx.author.id)
+            view = StatsViewInternal(self.bot, ctx.guild.id, ctx.author.id)
 
         await ctx.send(embed=e, view=view, delete_after=300)
 

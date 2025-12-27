@@ -11,6 +11,16 @@ if TYPE_CHECKING:
 from bot_app.core.dev_manager import dev_manager
 from bot_app.core.lru_cache import LRUCacheWithTTL
 
+if TYPE_CHECKING:
+    from bot_app.features.voice_logger import VoiceLogger
+    from bot_app.core.runtime_settings import RuntimeSettings
+    from bot_app.core.app_db import AppDB
+    from bot_app.features.profile_manager import ProfileManager
+    from bot_app.features.context_manager import ContextManager
+    from bot_app.features.ai_manager import AIManager
+    import discord
+    import aiohttp
+
 # Global State Containers
 loggers: dict[int, "VoiceLogger"] = {}
 settings_cache: LRUCacheWithTTL = LRUCacheWithTTL(max_size=100, ttl_seconds=3600, name="SettingsCache")
@@ -20,6 +30,9 @@ tasks: list[asyncio.Task] = []
 # We will inject DB instance here later
 db: "AppDB | None" = None
 http_session: "aiohttp.ClientSession | None" = None
+profile_manager: "ProfileManager | None" = None
+context_manager: "ContextManager | None" = None
+ai_manager: "AIManager | None" = None
 
 async def get_settings(guild_id: int) -> "RuntimeSettings":
     """
