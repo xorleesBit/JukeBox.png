@@ -15,6 +15,7 @@ __pycache__/
 # IDE/OS
 .idea/
 .vscode/
+.code-workspace
 .DS_Store
 Thumbs.db
 versions/

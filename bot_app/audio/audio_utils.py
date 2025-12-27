@@ -112,11 +112,24 @@ def reconstruct_user_audio(packets: list, start_ts: float = None, end_ts: float 
         
         # start_sample is in "stereo frames". Array index is * 2.
         idx_start = start_sample * CHANNELS
+        
+        # Safety: Ensure non-negative start
+        if idx_start < 0: 
+            # Trim from beginning if needed
+            skip = abs(idx_start)
+            if skip >= len(packet_arr): continue
+            packet_arr = packet_arr[skip:]
+            idx_start = 0
+
         idx_end = idx_start + len(packet_arr)
         
+        # Bounds check against canvas
         if idx_end > len(canvas):
             packet_arr = packet_arr[:len(canvas)-idx_start]
             idx_end = idx_start + len(packet_arr)
+        
+        if len(packet_arr) == 0:
+            continue
             
         canvas[idx_start:idx_end] = packet_arr
         
