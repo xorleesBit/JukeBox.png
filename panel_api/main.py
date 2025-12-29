@@ -150,6 +150,41 @@ async def get_guilds():
     except Exception as e:
         raise HTTPException(500, f"Bot Sidecar error: {str(e)}")
 
+# --- Commands & Settings ---
+
+@app.get("/bot/commands", dependencies=[Depends(verify_token)])
+async def get_commands():
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{BOT_API_URL}/commands")
+        return resp.json()
+
+class ToggleCommandRequest(BaseModel):
+    name: str
+    enabled: bool
+
+@app.post("/bot/commands/toggle", dependencies=[Depends(verify_token)])
+async def toggle_command(req: ToggleCommandRequest):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(f"{BOT_API_URL}/commands/toggle", json=req.dict())
+        return resp.json()
+
+@app.get("/bot/settings/{guild_id}", dependencies=[Depends(verify_token)])
+async def get_settings(guild_id: int):
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{BOT_API_URL}/settings?guild_id={guild_id}")
+        return resp.json()
+
+class UpdateSettingRequest(BaseModel):
+    guild_id: int
+    key: str
+    value: str | int | bool
+
+@app.post("/bot/settings/update", dependencies=[Depends(verify_token)])
+async def update_setting(req: UpdateSettingRequest):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(f"{BOT_API_URL}/settings/update", json=req.dict())
+        return resp.json()
+
 # --- User Management ---
 
 @app.get("/users/{guild_id}", dependencies=[Depends(verify_token)])

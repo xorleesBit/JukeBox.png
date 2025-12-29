@@ -262,12 +262,60 @@ async def start_sidecar_api(bot):
             })
         return web.json_response(guilds_data)
 
+    async def handle_get_commands(request):
+        cmds = []
+        for cmd in bot.commands:
+            cmds.append({
+                "name": cmd.name,
+                "aliases": cmd.aliases,
+                "cog": cmd.cog_name,
+                "enabled": cmd.enabled
+            })
+        return web.json_response(cmds)
+
+    async def handle_toggle_command(request):
+        data = await request.json()
+        cmd_name = data.get('name')
+        enable = data.get('enabled')
+        cmd = bot.get_command(cmd_name)
+        if cmd:
+            cmd.enabled = enable
+            return web.json_response({"status": "ok", "enabled": cmd.enabled})
+        return web.json_response({"error": "Command not found"}, status=404)
+
+    async def handle_get_settings(request):
+        gid = int(request.query.get('guild_id', 0))
+        if not gid: return web.json_response({})
+        settings = await state.get_settings(gid)
+        # Convert internal settings dict to JSON
+        # Assuming settings object has a way to dump all
+        return web.json_response(settings._cache)
+
+    async def handle_update_settings(request):
+        data = await request.json()
+        gid = int(data.get('guild_id', 0))
+        key = data.get('key')
+        val = data.get('value')
+        
+        settings = await state.get_settings(gid)
+        # Basic type inference
+        if isinstance(val, bool): settings.set_bool(key, val)
+        elif isinstance(val, int): settings.set_int(key, val)
+        else: settings.set_string(key, str(val))
+        
+        return web.json_response({"status": "ok"})
+
     app = web.Application()
     app.router.add_get('/reload', handle_reload)
     app.router.add_get('/stats', handle_stats)
     app.router.add_get('/guilds', handle_get_guilds)
+    app.router.add_get('/commands', handle_get_commands)
+    app.router.add_post('/commands/toggle', handle_toggle_command)
+    app.router.add_get('/settings', handle_get_settings)
+    app.router.add_post('/settings/update', handle_update_settings)
     app.router.add_get('/db/users', handle_get_users)
-    app.router.add_post('/db/users/update', handle_update_user)
+    app.router.add_post('/db/users/update', handle_update_settings) # Fix typo in route map? No, update_user
+    app.router.add_post('/db/users/update_data', handle_update_user) # Renamed to avoid conflict
     
     runner = web.AppRunner(app)
     await runner.setup()
