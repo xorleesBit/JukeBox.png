@@ -65,7 +65,7 @@ def list_logs():
             full_path = os.path.join(root, file)
             size = os.path.getsize(full_path)
             file_tree.append({
-                "path": os.path.join(rel_path, file).replace("\", "/"),
+                "path": os.path.join(rel_path, file).replace("\\", "/"),
                 "size_kb": round(size / 1024, 2)
             })
     return file_tree
