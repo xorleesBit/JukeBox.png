@@ -234,9 +234,40 @@ async def start_sidecar_api(bot):
             "active_loggers": active_loggers
         })
 
+    async def handle_get_users(request):
+        guild_id = int(request.query.get('guild_id', 0))
+        if not guild_id: return web.json_response({"error": "No guild_id"}, status=400)
+        users = await bot.db.get_top_users(guild_id, limit=50)
+        # Convert to list of dicts if needed
+        return web.json_response([dict(u) for u in users])
+
+    async def handle_update_user(request):
+        data = await request.json()
+        gid, uid = data['guild_id'], data['user_id']
+        if 'balance' in data and data['balance'] is not None:
+            # We assume a new method in DB or use existing
+            await bot.db.pool.execute("UPDATE users SET balance = $1 WHERE guild_id = $2 AND user_id = $3", data['balance'], gid, uid)
+        if 'xp' in data and data['xp'] is not None:
+            await bot.db.pool.execute("UPDATE users SET xp = $1 WHERE guild_id = $2 AND user_id = $3", data['xp'], gid, uid)
+        return web.json_response({"status": "ok"})
+
+    async def handle_get_guilds(request):
+        guilds_data = []
+        for g in bot.guilds:
+            guilds_data.append({
+                "id": str(g.id),
+                "name": g.name,
+                "member_count": g.member_count,
+                "icon": g.icon.url if g.icon else None
+            })
+        return web.json_response(guilds_data)
+
     app = web.Application()
     app.router.add_get('/reload', handle_reload)
     app.router.add_get('/stats', handle_stats)
+    app.router.add_get('/guilds', handle_get_guilds)
+    app.router.add_get('/db/users', handle_get_users)
+    app.router.add_post('/db/users/update', handle_update_user)
     
     runner = web.AppRunner(app)
     await runner.setup()

@@ -30,6 +30,9 @@ os.makedirs(FLOWS_DIR, exist_ok=True)
 
 # --- Dependencies ---
 async def verify_token(authorization: str = Header(None)):
+    print(f"[DEBUG] Auth Header: {authorization}") # DEBUG
+    print(f"[DEBUG] Expected Key: {MASTER_KEY}")   # DEBUG
+
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization Header")
     
@@ -38,6 +41,7 @@ async def verify_token(authorization: str = Header(None)):
         if scheme.lower() != 'bearer':
              raise HTTPException(status_code=401, detail="Invalid scheme")
         if token != MASTER_KEY:
+            print(f"[DEBUG] Token mismatch! Got '{token}', expected '{MASTER_KEY}'")
             raise HTTPException(status_code=403, detail="Invalid Token")
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid Authorization Header format")
@@ -135,6 +139,44 @@ def get_docker_logs():
         return {"logs": logs}
     except Exception as e:
         raise HTTPException(500, f"Error getting docker logs: {str(e)}")
+
+@app.get("/bot/guilds", dependencies=[Depends(verify_token)])
+async def get_guilds():
+    """Fetches list of guilds from Bot Sidecar."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{BOT_API_URL}/guilds", timeout=5.0)
+            return resp.json()
+    except Exception as e:
+        raise HTTPException(500, f"Bot Sidecar error: {str(e)}")
+
+# --- User Management ---
+
+@app.get("/users/{guild_id}", dependencies=[Depends(verify_token)])
+async def get_users(guild_id: int):
+    """Fetches top users for a guild via Bot Sidecar."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{BOT_API_URL}/db/users?guild_id={guild_id}", timeout=5.0)
+            return resp.json()
+    except Exception as e:
+        raise HTTPException(500, f"Bot Sidecar error: {str(e)}")
+
+class UpdateUserRequest(BaseModel):
+    guild_id: int
+    user_id: int
+    balance: int = None
+    xp: int = None
+
+@app.post("/users/update", dependencies=[Depends(verify_token)])
+async def update_user(req: UpdateUserRequest):
+    """Updates user stats via Bot Sidecar."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(f"{BOT_API_URL}/db/users/update", json=req.dict(), timeout=5.0)
+            return resp.json()
+    except Exception as e:
+        raise HTTPException(500, f"Bot Sidecar error: {str(e)}")
 
 # --- Flow Management (n8n style) ---
 
