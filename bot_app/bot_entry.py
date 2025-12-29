@@ -124,6 +124,7 @@ async def on_ready():
 
     # Load Cogs
     initial_extensions = [
+        "bot_app.features.error_handler", # Global Error Handler
         "bot_app.cogs.general_commands",
         "bot_app.cogs.economy_commands",
         "bot_app.cogs.admin_commands",

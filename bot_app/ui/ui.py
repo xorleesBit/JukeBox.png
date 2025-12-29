@@ -647,7 +647,7 @@ class AIView(discord.ui.View):
     @discord.ui.button(label="Анализ (Обновить)", style=discord.ButtonStyle.primary, row=1)
     async def btn_analyze(self, i, _):
         await i.response.send_message("Запущен анализ...", ephemeral=True)
-        rep = await ProfileManager(self.db, self.guild_id).run_analysis(self.guild_name)
+        rep = await ProfileManager(self.db).run_analysis(self.guild_id, self.guild_name)
         await i.followup.send(rep, ephemeral=True)
 
     @discord.ui.button(label="Чат", style=discord.ButtonStyle.secondary, row=1)

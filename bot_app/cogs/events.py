@@ -58,6 +58,21 @@ class EventsCog(commands.Cog):
         l = loggers.get(member.guild.id)
         if not l or not l.is_recording: return
         
+        # --- 1. Handle BOT disconnect/move ---
+        if member.id == self.bot.user.id:
+            # Bot disconnected
+            if not after.channel:
+                l.log_event(time.time(), "🛑", "Бот отключен от канала (External Disconnect).")
+                await l.stop()
+                return
+            
+            # Bot moved
+            if before.channel and after.channel and before.channel.id != after.channel.id:
+                l.voice_channel_id = after.channel.id
+                l.log_event(time.time(), "🔄", f"Бот перемещен в канал: {after.channel.name}")
+                return
+
+        # --- 2. Handle USER events ---
         mon_id = l.voice_channel_id
         if after.channel and after.channel.id == mon_id and (not before.channel or before.channel.id != mon_id):
             if member.id != self.bot.user.id:
