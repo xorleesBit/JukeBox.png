@@ -215,18 +215,17 @@ async def update_user(req: UpdateUserRequest):
 
 # --- Flow Management (n8n style) ---
 
-@app.get("/flows", dependencies=[Depends(verify_token)])
-def list_flows():
-    """Returns list of all logic flows."""
-    files = [f for f in os.listdir(FLOWS_DIR) if f.endswith(".json")]
-    result = []
-    for f in files:
-        with open(os.path.join(FLOWS_DIR, f), 'r', encoding='utf-8') as file:
-            try:
-                data = json.load(file)
-                result.append({"name": f.replace(".json", ""), "data": data})
-            except: pass
-    return result
+@app.get("/bot/flows/list", dependencies=[Depends(verify_token)])
+async def list_flows():
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{BOT_API_URL}/flows/list")
+        return resp.json()
+
+@app.get("/bot/flows/get", dependencies=[Depends(verify_token)])
+async def get_flow(name: str):
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{BOT_API_URL}/flows/get?name={name}")
+        return resp.json()
 
 class SaveFlowRequest(BaseModel):
     name: str
@@ -238,6 +237,8 @@ async def save_flow(req: SaveFlowRequest):
     if "trigger" not in req.data or "nodes" not in req.data:
         raise HTTPException(400, "Invalid flow structure")
     
+    # We can save directly since we share volume, or proxy.
+    # Let's save locally to share volume, then reload bot.
     safe_name = "".join(c for c in req.name if c.isalnum() or c in (' ', '_')).rstrip()
     path = os.path.join(FLOWS_DIR, f"{safe_name}.json")
     
@@ -245,7 +246,7 @@ async def save_flow(req: SaveFlowRequest):
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(req.data, f, indent=2, ensure_ascii=False)
         
-        # Notify bot
+        # Notify bot to reload flows
         async with httpx.AsyncClient() as client:
             await client.get(f"{BOT_API_URL}/reload", timeout=2.0)
             

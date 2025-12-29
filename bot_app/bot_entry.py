@@ -237,73 +237,45 @@ async def start_sidecar_api(bot):
     async def handle_get_users(request):
         guild_id = int(request.query.get('guild_id', 0))
         if not guild_id: return web.json_response({"error": "No guild_id"}, status=400)
-        users = await bot.db.get_top_users(guild_id, limit=50)
-        # Convert to list of dicts if needed
-        return web.json_response([dict(u) for u in users])
-
-    async def handle_update_user(request):
-        data = await request.json()
-        gid, uid = data['guild_id'], data['user_id']
-        if 'balance' in data and data['balance'] is not None:
-            # We assume a new method in DB or use existing
-            await bot.db.pool.execute("UPDATE users SET balance = $1 WHERE guild_id = $2 AND user_id = $3", data['balance'], gid, uid)
-        if 'xp' in data and data['xp'] is not None:
-            await bot.db.pool.execute("UPDATE users SET xp = $1 WHERE guild_id = $2 AND user_id = $3", data['xp'], gid, uid)
-        return web.json_response({"status": "ok"})
-
-    async def handle_get_guilds(request):
-        guilds_data = []
-        for g in bot.guilds:
-            guilds_data.append({
-                "id": str(g.id),
-                "name": g.name,
-                "member_count": g.member_count,
-                "icon": g.icon.url if g.icon else None
-            })
-        return web.json_response(guilds_data)
-
-    async def handle_get_commands(request):
-        cmds = []
-        for cmd in bot.commands:
-            cmds.append({
-                "name": cmd.name,
-                "aliases": cmd.aliases,
-                "cog": cmd.cog_name,
-                "enabled": cmd.enabled
-            })
-        return web.json_response(cmds)
-
-    async def handle_toggle_command(request):
-        data = await request.json()
-        cmd_name = data.get('name')
-        enable = data.get('enabled')
-        cmd = bot.get_command(cmd_name)
-        if cmd:
-            cmd.enabled = enable
-            return web.json_response({"status": "ok", "enabled": cmd.enabled})
-        return web.json_response({"error": "Command not found"}, status=404)
-
-    async def handle_get_settings(request):
-        gid = int(request.query.get('guild_id', 0))
-        if not gid: return web.json_response({})
-        settings = await state.get_settings(gid)
-        # Convert internal settings dict to JSON
-        # Assuming settings object has a way to dump all
-        return web.json_response(settings._cache)
-
-    async def handle_update_settings(request):
-        data = await request.json()
-        gid = int(data.get('guild_id', 0))
-        key = data.get('key')
-        val = data.get('value')
         
-        settings = await state.get_settings(gid)
-        # Basic type inference
-        if isinstance(val, bool): settings.set_bool(key, val)
-        elif isinstance(val, int): settings.set_int(key, val)
-        else: settings.set_string(key, str(val))
+        # Get raw DB data
+        users = await bot.db.get_top_users(guild_id, limit=100)
         
-        return web.json_response({"status": "ok"})
+        # Enrich with Discord Data
+        guild = bot.get_guild(guild_id)
+        enriched = []
+        for u in users:
+            u_dict = dict(u)
+            if guild:
+                member = guild.get_member(u['user_id'])
+                if member:
+                    u_dict['name'] = member.name
+                    u_dict['display_name'] = member.display_name
+                    u_dict['avatar'] = str(member.display_avatar.url) if member.display_avatar else None
+                else:
+                    u_dict['name'] = "Unknown"
+                    u_dict['display_name'] = "Left Server"
+            enriched.append(u_dict)
+            
+        return web.json_response(enriched)
+
+    # --- Flow Management Endpoints ---
+    async def handle_list_flows(request):
+        flows_dir = "/app/data/flows"
+        if not os.path.exists(flows_dir): return web.json_response([])
+        files = [f for f in os.listdir(flows_dir) if f.endswith('.json')]
+        return web.json_response(files)
+
+    async def handle_get_flow(request):
+        name = request.query.get('name')
+        if not name: return web.json_response({"error": "No name"}, status=400)
+        path = f"/app/data/flows/{name}"
+        if not os.path.exists(path): return web.json_response({"error": "Not found"}, status=404)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return web.json_response(json.load(f))
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
 
     app = web.Application()
     app.router.add_get('/reload', handle_reload)
@@ -314,8 +286,10 @@ async def start_sidecar_api(bot):
     app.router.add_get('/settings', handle_get_settings)
     app.router.add_post('/settings/update', handle_update_settings)
     app.router.add_get('/db/users', handle_get_users)
-    app.router.add_post('/db/users/update', handle_update_settings) # Fix typo in route map? No, update_user
-    app.router.add_post('/db/users/update_data', handle_update_user) # Renamed to avoid conflict
+    app.router.add_post('/db/users/update', handle_update_user)
+    
+    app.router.add_get('/flows/list', handle_list_flows)
+    app.router.add_get('/flows/get', handle_get_flow)
     
     runner = web.AppRunner(app)
     await runner.setup()
