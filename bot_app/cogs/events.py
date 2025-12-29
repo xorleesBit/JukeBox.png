@@ -47,6 +47,10 @@ class EventsCog(commands.Cog):
         if l and l.is_recording:
             l.log_chat_message(message.author.name, message.content)
 
+        # 4. Custom Flows (Logic Builder)
+        if hasattr(self.bot, 'flow_interpreter'):
+            await self.bot.flow_interpreter.handle_event("on_message", {"message": message})
+
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if not member.guild: return

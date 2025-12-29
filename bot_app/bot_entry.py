@@ -22,6 +22,7 @@ from .core.metrics import collect_metrics, format_metrics
 from .features.profile_manager import ProfileManager
 from .features.context_manager import ContextManager
 from .features.ai_manager import AIManager
+from .features.flow_interpreter import FlowInterpreter
 
 # --- Logging ---
 logging.basicConfig(
@@ -118,6 +119,10 @@ async def on_ready():
         servers_count = len(bot.guilds)
         await app_db.connect(servers_count=servers_count)
         print(f"✅ Database Connected (optimized for {servers_count} servers)")
+        
+        # Initialize Flow Interpreter
+        bot.flow_interpreter = FlowInterpreter(bot, app_db)
+        print("✅ Flow Interpreter initialized")
     except Exception as e:
         print(f"❌ DB Error: {e}")
         return
@@ -170,6 +175,9 @@ async def on_ready():
     asyncio.create_task(metrics_logger_task())
     print("✅ Metrics logger started")
 
+    # Start Sidecar API
+    asyncio.create_task(start_sidecar_api(bot))
+    
     print("🔄 Restoring state...")
     state.loggers.clear()
     
@@ -206,6 +214,35 @@ async def metrics_logger_task():
         except Exception as e:
             logger.error(f"Metrics collection error: {e}")
             await asyncio.sleep(300)
+
+# --- Sidecar API for Panel ---
+async def start_sidecar_api(bot):
+    from aiohttp import web
+    
+    async def handle_reload(request):
+        if hasattr(bot, 'flow_interpreter'):
+            bot.flow_interpreter.load_flows()
+            return web.json_response({"status": "ok", "message": "Flows reloaded"})
+        return web.json_response({"status": "error", "message": "No interpreter found"}, status=500)
+
+    async def handle_stats(request):
+        active_loggers = len(getattr(bot, 'loggers', {}))
+        return web.json_response({
+            "status": "online",
+            "ping": round(bot.latency * 1000) if bot.latency else 0,
+            "guilds": len(bot.guilds),
+            "active_loggers": active_loggers
+        })
+
+    app = web.Application()
+    app.router.add_get('/reload', handle_reload)
+    app.router.add_get('/stats', handle_stats)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8081)
+    await site.start()
+    print("🚀 Bot Sidecar API started on port 8081")
 
 import signal
 

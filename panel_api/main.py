@@ -4,9 +4,12 @@ from pydantic import BaseModel
 import os
 import docker
 import psutil
+import httpx
 from typing import List
 
 app = FastAPI(title="LogerBot Panel API")
+
+BOT_API_URL = "http://bot:8081" # Внутренний адрес в Docker
 
 # CORS (Allow requests from your local React app)
 app.add_middleware(
@@ -20,7 +23,10 @@ app.add_middleware(
 # --- Config ---
 MASTER_KEY = os.getenv("MASTER_KEY", "default_insecure_key")
 LOGS_DIR = "/app/logs"
+FLOWS_DIR = "/app/data/flows"
 BOT_CONTAINER_NAME = "logerbot_app"
+
+os.makedirs(FLOWS_DIR, exist_ok=True)
 
 # --- Dependencies ---
 async def verify_token(authorization: str = Header(None)):
@@ -39,15 +45,27 @@ async def verify_token(authorization: str = Header(None)):
 # --- Routes ---
 
 @app.get("/status", dependencies=[Depends(verify_token)])
-def get_status():
-    """Returns basic server stats."""
+async def get_status():
+    """Returns basic server stats and live bot stats."""
     vm = psutil.virtual_memory()
-    return {
+    server_stats = {
         "cpu_percent": psutil.cpu_percent(),
         "ram_percent": vm.percent,
         "ram_used_mb": vm.used // (1024 * 1024),
         "ram_total_mb": vm.total // (1024 * 1024)
     }
+    
+    # Try to get live data from bot
+    bot_stats = {"status": "offline"}
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{BOT_API_URL}/stats", timeout=1.0)
+            if resp.status_code == 200:
+                bot_stats = resp.json()
+    except:
+        pass
+        
+    return {"server": server_stats, "bot": bot_stats}
 
 # --- Logs ---
 @app.get("/logs", dependencies=[Depends(verify_token)])
@@ -105,6 +123,68 @@ def restart_bot():
         raise HTTPException(404, "Bot container not found")
     except Exception as e:
         raise HTTPException(500, f"Docker error: {str(e)}")
+
+@app.get("/bot/docker-logs", dependencies=[Depends(verify_token)])
+def get_docker_logs():
+    """Returns recent stdout/stderr from the bot container."""
+    try:
+        client = docker.from_env()
+        container = client.containers.get(BOT_CONTAINER_NAME)
+        # Tail last 100 lines
+        logs = container.logs(tail=100).decode('utf-8', errors='replace')
+        return {"logs": logs}
+    except Exception as e:
+        raise HTTPException(500, f"Error getting docker logs: {str(e)}")
+
+# --- Flow Management (n8n style) ---
+
+@app.get("/flows", dependencies=[Depends(verify_token)])
+def list_flows():
+    """Returns list of all logic flows."""
+    files = [f for f in os.listdir(FLOWS_DIR) if f.endswith(".json")]
+    result = []
+    for f in files:
+        with open(os.path.join(FLOWS_DIR, f), 'r', encoding='utf-8') as file:
+            try:
+                data = json.load(file)
+                result.append({"name": f.replace(".json", ""), "data": data})
+            except: pass
+    return result
+
+class SaveFlowRequest(BaseModel):
+    name: str
+    data: dict
+
+@app.post("/flows/save", dependencies=[Depends(verify_token)])
+async def save_flow(req: SaveFlowRequest):
+    """Saves flow and tells bot to reload."""
+    if "trigger" not in req.data or "nodes" not in req.data:
+        raise HTTPException(400, "Invalid flow structure")
+    
+    safe_name = "".join(c for c in req.name if c.isalnum() or c in (' ', '_')).rstrip()
+    path = os.path.join(FLOWS_DIR, f"{safe_name}.json")
+    
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(req.data, f, indent=2, ensure_ascii=False)
+        
+        # Notify bot
+        async with httpx.AsyncClient() as client:
+            await client.get(f"{BOT_API_URL}/reload", timeout=2.0)
+            
+        return {"status": "success", "reloaded": True}
+    except Exception as e:
+        return {"status": "success", "reloaded": False, "error": str(e)}
+
+
+@app.delete("/flows/{name}", dependencies=[Depends(verify_token)])
+def delete_flow(name: str, dependencies=[Depends(verify_token)]):
+    """Deletes a flow file."""
+    path = os.path.join(FLOWS_DIR, f"{name}.json")
+    if os.path.exists(path):
+        os.remove(path)
+        return {"status": "deleted"}
+    raise HTTPException(404, "Flow not found")
 
 if __name__ == "__main__":
     import uvicorn

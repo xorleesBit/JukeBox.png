@@ -32,6 +32,8 @@ services:
       - ./voice_logs:/app/voice_logs
       # Общие логи через Volume
       - logs_data:/app/logs
+      # Схемы логики (n8n style)
+      - flows_data:/app/data/flows
       # ПРОБРОС КОДА (Позволяет обновлять код без пересборки образа)
       - ./bot_app:/app/bot_app
       - ./start.py:/app/start.py
@@ -50,6 +52,8 @@ services:
     volumes:
       # Читаем те же логи
       - logs_data:/app/logs
+      # Управление схемами
+      - flows_data:/app/data/flows
       # Управление Docker
       - /var/run/docker.sock:/var/run/docker.sock
     deploy:
@@ -60,3 +64,4 @@ services:
 volumes:
   postgres_data:
   logs_data:
+  flows_data:
