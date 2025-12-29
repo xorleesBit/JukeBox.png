@@ -227,6 +227,12 @@ async def get_flow(name: str):
         resp = await client.get(f"{BOT_API_URL}/flows/get?name={name}")
         return resp.json()
 
+@app.post("/bot/nodes/test", dependencies=[Depends(verify_token)])
+async def test_node(req: dict):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(f"{BOT_API_URL}/nodes/test", json=req)
+        return resp.json()
+
 class SaveFlowRequest(BaseModel):
     name: str
     data: dict

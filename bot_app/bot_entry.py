@@ -174,9 +174,6 @@ async def on_ready():
     # Start metrics logging task
     asyncio.create_task(metrics_logger_task())
     print("✅ Metrics logger started")
-
-    # Start Sidecar API
-    asyncio.create_task(start_sidecar_api(bot))
     
     print("🔄 Restoring state...")
     state.loggers.clear()
@@ -234,6 +231,64 @@ async def start_sidecar_api(bot):
             "active_loggers": active_loggers
         })
 
+    async def handle_get_guilds(request):
+        guilds_data = []
+        for g in bot.guilds:
+            guilds_data.append({
+                "id": str(g.id),
+                "name": g.name,
+                "member_count": g.member_count,
+                "icon": g.icon.url if g.icon else None
+            })
+        return web.json_response(guilds_data)
+
+    async def handle_get_commands(request):
+        cmds = []
+        for cmd in bot.commands:
+            cmds.append({
+                "name": cmd.name,
+                "aliases": cmd.aliases,
+                "cog": cmd.cog_name,
+                "enabled": cmd.enabled
+            })
+        return web.json_response(cmds)
+
+    async def handle_toggle_command(request):
+        data = await request.json()
+        cmd_name = data.get('name')
+        enable = data.get('enabled')
+        cmd = bot.get_command(cmd_name)
+        if cmd:
+            cmd.enabled = enable
+            return web.json_response({"status": "ok", "enabled": cmd.enabled})
+        return web.json_response({"error": "Command not found"}, status=404)
+
+    async def handle_get_settings(request):
+        gid = int(request.query.get('guild_id', 0))
+        if not gid: return web.json_response({})
+        settings = await state.get_settings(gid)
+        return web.json_response(settings._cache if hasattr(settings, '_cache') else {})
+
+    async def handle_update_settings(request):
+        data = await request.json()
+        gid = int(data.get('guild_id', 0))
+        key = data.get('key')
+        val = data.get('value')
+        settings = await state.get_settings(gid)
+        if isinstance(val, bool): settings.set_bool(key, val)
+        elif isinstance(val, int): settings.set_int(key, val)
+        else: settings.set_string(key, str(val))
+        return web.json_response({"status": "ok"})
+
+    async def handle_update_user(request):
+        data = await request.json()
+        gid, uid = data.get('guild_id'), data.get('user_id')
+        if 'balance' in data:
+            await bot.db.pool.execute("UPDATE users SET balance = $1 WHERE guild_id = $2 AND user_id = $3", data['balance'], gid, uid)
+        if 'xp' in data:
+            await bot.db.pool.execute("UPDATE users SET xp = $1 WHERE guild_id = $2 AND user_id = $3", data['xp'], gid, uid)
+        return web.json_response({"status": "ok"})
+
     async def handle_get_users(request):
         guild_id = int(request.query.get('guild_id', 0))
         if not guild_id: return web.json_response({"error": "No guild_id"}, status=400)
@@ -277,6 +332,44 @@ async def start_sidecar_api(bot):
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def handle_test_node(request):
+        try:
+            req = await request.json()
+            node_type = req.get('type')
+            data = req.get('data', {})
+            
+            result = {"success": True, "output": None, "logs": []}
+            
+            if node_type == 'action_ai_response':
+                prompt = data.get('system_prompt', '')
+                from bot_app.integrations.ai_client import ask_ai
+                # Mock user message
+                resp = await ask_ai(f"System: {prompt}\nUser: [TEST MESSAGE]")
+                result['output'] = resp
+                result['logs'].append(f"AI generated {len(resp)} chars.")
+                
+            elif node_type == 'trigger':
+                f = data.get('filters', {}).get('content_contains', '')
+                result['output'] = f"Trigger will fire if message contains: '{f}'"
+                
+            elif node_type == 'action_reply':
+                result['output'] = f"Bot will reply: {data.get('text')}"
+                
+            elif node_type == 'action_delay':
+                result['output'] = f"Waiting {data.get('seconds')} seconds..."
+                
+            elif node_type == 'action_role':
+                rid = data.get('role_id')
+                role = None
+                # Try to find role in first guild
+                if bot.guilds:
+                    role = bot.guilds[0].get_role(int(rid)) if rid else None
+                result['output'] = f"Would give role: {role.name if role else 'Unknown Role ID'}"
+                
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)})
+
     app = web.Application()
     app.router.add_get('/reload', handle_reload)
     app.router.add_get('/stats', handle_stats)
@@ -290,6 +383,7 @@ async def start_sidecar_api(bot):
     
     app.router.add_get('/flows/list', handle_list_flows)
     app.router.add_get('/flows/get', handle_get_flow)
+    app.router.add_post('/nodes/test', handle_test_node)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -358,6 +452,9 @@ async def main(token):
             # Windows loop might not support add_signal_handler in some modes, 
             # but usually okay with selector loop.
             pass
+
+    # Start Sidecar API immediately so panel can connect even if bot is connecting
+    asyncio.create_task(start_sidecar_api(bot))
 
     async with bot:
         try:
