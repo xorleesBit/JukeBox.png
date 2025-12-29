@@ -30,7 +30,8 @@ services:
     volumes:
       # Пробрасываем папки для сохранения голоса и логов
       - ./voice_logs:/app/voice_logs
-      - ./bot_debug.log:/app/bot_debug.log
+      # Общие логи через Volume
+      - logs_data:/app/logs
       # ПРОБРОС КОДА (Позволяет обновлять код без пересборки образа)
       - ./bot_app:/app/bot_app
       - ./start.py:/app/start.py
@@ -38,5 +39,24 @@ services:
     command: >
       sh -c "pip install -r requirements.txt && python start.py"
 
+  panel:
+    build: ./panel_api
+    container_name: logerbot_panel_api
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - MASTER_KEY=${PANEL_MASTER_KEY:-secret123}
+    volumes:
+      # Читаем те же логи
+      - logs_data:/app/logs
+      # Управление Docker
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
 volumes:
   postgres_data:
+  logs_data:
