@@ -359,8 +359,8 @@ async def start_sidecar_api(bot):
             
             result = {"success": True, "output": None, "logs": [], "resolved_inputs": resolved_data}
             
-            if node_type == 'action_ai_response':
-                prompt = resolved_data.get('system_prompt', '')
+            if node_type == 'action_ai' or node_type == 'action_ai_response':
+                prompt = resolved_data.get('prompt') or resolved_data.get('system_prompt', '')
                 from bot_app.integrations.ai_client import ask_ai
                 # Simulate
                 logs = []

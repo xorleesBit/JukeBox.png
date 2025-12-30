@@ -24,7 +24,6 @@ class FlowInterpreter:
                 try:
                     with open(os.path.join(self.flows_dir, filename), 'r', encoding='utf-8') as f:
                         flow = json.load(f)
-                        # Index nodes by ID for fast lookup if needed
                         self.flows.append(flow)
                 except Exception as e:
                     logger.error(f"Failed to load flow {filename}: {e}")
@@ -33,22 +32,157 @@ class FlowInterpreter:
     async def handle_event(self, event_type: str, initial_data: Dict[str, Any]):
         """Main entry point for events (e.g. on_message)."""
         for flow in self.flows:
-            trigger = flow.get("data", {}).get("trigger", {})
-            if trigger.get("type") != event_type: continue
+            data = flow.get("data", {})
+            trigger_conf = data.get("trigger", {})
+            
+            # 1. Validate Trigger Type
+            if trigger_conf.get("type") != event_type: 
+                continue
 
-            # Filter Check
+            # 2. Validate Filters
             if event_type == "on_message":
                 msg = initial_data.get("message")
-                filters = trigger.get("filters", {})
-                if filters.get("content_contains") and filters.get("content_contains").lower() not in msg.content.lower():
+                filters = trigger_conf.get("filters", {})
+                content_filter = filters.get("content_contains")
+                if content_filter and content_filter.lower() not in msg.content.lower():
                     continue
 
-            # Start Execution
-            # We assume linear execution for now based on 'nodes' list order from save
-            # In a graph engine, we would traverse edges.
+            # 3. Initialize Context
             context = {"trigger": self._serialize_initial_data(initial_data)}
             
-            await self._execute_sequence(flow.get("data", {}).get("nodes", []), context, initial_data)
+            # 4. Find Start Node (The Trigger Node)
+            nodes = data.get("nodes", [])
+            edges = data.get("edges", [])
+            
+            start_node = next((n for n in nodes if n["type"] == "trigger"), None)
+            if not start_node:
+                logger.warning(f"Flow {flow.get('name')} has no trigger node.")
+                continue
+
+            # 5. Start Graph Traversal
+            # We use a task to not block the event loop
+            asyncio.create_task(self._execute_graph(start_node, nodes, edges, context, initial_data))
+
+    async def _execute_graph(self, current_node: dict, nodes: List[dict], edges: List[dict], context: Dict[str, Any], raw_objects: Dict[str, Any]):
+        """
+        Executes the graph using a queue-based approach.
+        """
+        queue = [current_node]
+        
+        # Safety: Prevent infinite loops (max steps)
+        steps = 0
+        max_steps = 100 
+
+        while queue and steps < max_steps:
+            node = queue.pop(0)
+            steps += 1
+            node_id = node.get("id")
+            node_type = node.get("type")
+            
+            # Execute Node Logic
+            success = await self._execute_node_logic(node, context, raw_objects)
+            
+            if not success:
+                continue
+
+            # Find Next Nodes
+            outgoing_edges = [e for e in edges if e["source"] == node_id]
+            
+            # --- Branching Logic ---
+            if node_type == "logic_if":
+                # Check result in context
+                result = context.get(node_id, {}).get("result", False)
+                # Filter edges by sourceHandle ('true' or 'false')
+                target_handle = "true" if result else "false"
+                outgoing_edges = [e for e in outgoing_edges if e.get("sourceHandle") == target_handle]
+
+            for edge in outgoing_edges:
+                target_id = edge["target"]
+                target_node = next((n for n in nodes if n["id"] == target_id), None)
+                if target_node:
+                    queue.append(target_node)
+
+    async def _execute_node_logic(self, node: dict, context: Dict[str, Any], raw_objects: Dict[str, Any]) -> bool:
+        """Executes a single node. Returns True if successful."""
+        node_type = node.get("type")
+        node_id = node.get("id")
+        params = node.get("data", {})
+        
+        # Resolve Variables
+        resolved_params = self._resolve_params(params, context)
+        
+        try:
+            output = {}
+            
+            if node_type == "trigger":
+                pass
+
+            elif node_type == "action_reply":
+                text = resolved_params.get("text", "")
+                msg = raw_objects.get("message")
+                if msg and text:
+                    sent = await msg.reply(text)
+                    output = {"sent_message_id": sent.id, "content": sent.content}
+
+            elif node_type == "action_ai":
+                prompt = resolved_params.get("prompt", "")
+                from bot_app.integrations.ai_client import ask_ai
+                
+                last_msg = context.get("trigger", {}).get("message", {}).get("content", "")
+                full_prompt = f"System: {prompt}\nUser: {last_msg}"
+                
+                resp = await ask_ai(full_prompt)
+                
+                msg = raw_objects.get("message")
+                if msg: await msg.reply(resp)
+                output = {"response": resp}
+
+            elif node_type == "action_delay":
+                sec = float(resolved_params.get("seconds", 1))
+                await asyncio.sleep(sec)
+                output = {"slept": sec}
+
+            elif node_type == "action_role":
+                rid = int(resolved_params.get("role_id", 0))
+                msg = raw_objects.get("message")
+                if msg and rid:
+                    role = msg.guild.get_role(rid)
+                    if role:
+                        await msg.author.add_roles(role)
+                        output = {"added_role": role.name}
+                    else:
+                        output = {"error": "Role not found"}
+
+            elif node_type == "logic_if":
+                val1 = resolved_params.get("value1")
+                op = resolved_params.get("operator", "==")
+                val2 = resolved_params.get("value2")
+                
+                # Simple type casting if numbers
+                try:
+                    if str(val1).isdigit(): val1 = float(val1)
+                    if str(val2).isdigit(): val2 = float(val2)
+                except: pass
+
+                res = False
+                if op == "==": res = (val1 == val2)
+                elif op == "!=": res = (val1 != val2)
+                elif op == ">": res = (float(val1) > float(val2))
+                elif op == "<": res = (float(val1) < float(val2))
+                elif op == "contains": res = (str(val2).lower() in str(val1).lower())
+                
+                output = {"result": res, "val1": val1, "val2": val2}
+
+            # Save Output
+            context[node_id] = output
+            context[node_type] = output
+            
+            return True
+
+        except Exception as e:
+            logger.error(f"Node {node_type} ({node_id}) failed: {e}")
+            context[f"{node_id}_error"] = str(e)
+            return False
 
     def _serialize_initial_data(self, data):
         """Converts Discord objects to JSON-serializable dict for context."""
@@ -64,68 +198,7 @@ class FlowInterpreter:
             }
         return res
 
-    async def _execute_sequence(self, nodes: List[dict], context: Dict[str, Any], raw_objects: Dict[str, Any]):
-        """Executes a list of nodes sequentially, passing context."""
-        
-        for i, node in enumerate(nodes):
-            node_type = node.get("type")
-            node_id = node.get("id", f"step_{i}") # Fallback ID
-            params = node.get("data", {})
-
-            # 1. Resolve Variables (e.g. {{trigger.message.content}})
-            resolved_params = self._resolve_params(params, context)
-
-            try:
-                output = {}
-                
-                # --- ACTIONS ---
-                if node_type == "action_reply":
-                    text = resolved_params.get("text", "")
-                    msg = raw_objects.get("message")
-                    if msg and text:
-                        sent = await msg.reply(text)
-                        output = {"sent_message_id": sent.id, "content": sent.content}
-
-                elif node_type == "action_ai_response":
-                    prompt = resolved_params.get("system_prompt", "")
-                    from bot_app.integrations.ai_client import ask_ai
-                    # Inject last user message context automatically
-                    last_msg = context.get("trigger", {}).get("message", {}).get("content", "")
-                    full_prompt = f"System: {prompt}\nUser: {last_msg}"
-                    
-                    resp = await ask_ai(full_prompt)
-                    
-                    # Auto-reply if implicit
-                    msg = raw_objects.get("message")
-                    if msg: await msg.reply(resp)
-                    output = {"response": resp}
-
-                elif node_type == "action_delay":
-                    sec = float(resolved_params.get("seconds", 1))
-                    await asyncio.sleep(sec)
-                    output = {"slept": sec}
-
-                elif node_type == "action_role":
-                    rid = int(resolved_params.get("role_id", 0))
-                    msg = raw_objects.get("message")
-                    if msg and rid:
-                        role = msg.guild.get_role(rid)
-                        if role:
-                            await msg.author.add_roles(role)
-                            output = {"added_role": role.name}
-                        else:
-                            output = {"error": "Role not found"}
-
-                # 2. Save Output to Context
-                context[node_type] = output # Simple namespacing by type (better by ID in future)
-                context[f"step_{i}"] = output
-
-            except Exception as e:
-                logger.error(f"Node {node_type} failed: {e}")
-                context[f"step_{i}_error"] = str(e)
-
     def _resolve_params(self, params: dict, context: dict) -> dict:
-        """Recursively replaces {{key.path}} strings with values from context."""
         resolved = {}
         for k, v in params.items():
             if isinstance(v, str):
@@ -144,6 +217,6 @@ class FlowInterpreter:
                     val = val[part]
                 return str(val)
             except (KeyError, TypeError, AttributeError):
-                return match.group(0) # Keep original if not found
+                return match.group(0)
 
         return re.sub(r'{{(.*?)}}', replacer, text)
