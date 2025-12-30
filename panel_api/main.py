@@ -229,7 +229,8 @@ async def get_flow(name: str):
 
 @app.post("/bot/nodes/test", dependencies=[Depends(verify_token)])
 async def test_node(req: dict):
-    async with httpx.AsyncClient() as client:
+    # AI generation takes time, so we need a long timeout
+    async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(f"{BOT_API_URL}/nodes/test", json=req)
         return resp.json()
 

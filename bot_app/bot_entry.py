@@ -337,34 +337,52 @@ async def start_sidecar_api(bot):
             req = await request.json()
             node_type = req.get('type')
             data = req.get('data', {})
+            # Frontend can send previous context to resolve variables
+            mock_context = req.get('context', {})
             
-            result = {"success": True, "output": None, "logs": []}
+            # Default Mock Trigger if empty
+            if "trigger" not in mock_context:
+                mock_context["trigger"] = {
+                    "message": {
+                        "content": "Test Message Content",
+                        "author": {"name": "TestUser", "display_name": "Test User"},
+                        "id": 123456789
+                    }
+                }
+
+            # Use Interpreter's logic to resolve variables
+            interpreter = getattr(bot, 'flow_interpreter', None)
+            if not interpreter:
+                interpreter = FlowInterpreter(bot, app_db) # Fallback
+            
+            resolved_data = interpreter._resolve_params(data, mock_context)
+            
+            result = {"success": True, "output": None, "logs": [], "resolved_inputs": resolved_data}
             
             if node_type == 'action_ai_response':
-                prompt = data.get('system_prompt', '')
+                prompt = resolved_data.get('system_prompt', '')
                 from bot_app.integrations.ai_client import ask_ai
-                # Mock user message
-                resp = await ask_ai(f"System: {prompt}\nUser: [TEST MESSAGE]")
-                result['output'] = resp
-                result['logs'].append(f"AI generated {len(resp)} chars.")
+                # Simulate
+                logs = []
+                try:
+                    resp = await ask_ai(f"System: {prompt}\nUser: {mock_context['trigger']['message']['content']}")
+                    result['output'] = {"response": resp}
+                except Exception as e:
+                    result['output'] = {"error": str(e)}
                 
             elif node_type == 'trigger':
-                f = data.get('filters', {}).get('content_contains', '')
-                result['output'] = f"Trigger will fire if message contains: '{f}'"
+                f = resolved_data.get('filters', {}).get('content_contains', '')
+                result['output'] = {"message": mock_context['trigger']['message']} # Pass-through
                 
             elif node_type == 'action_reply':
-                result['output'] = f"Bot will reply: {data.get('text')}"
+                result['output'] = {"sent_content": resolved_data.get('text')}
                 
             elif node_type == 'action_delay':
-                result['output'] = f"Waiting {data.get('seconds')} seconds..."
+                result['output'] = {"slept": resolved_data.get('seconds')}
                 
             elif node_type == 'action_role':
-                rid = data.get('role_id')
-                role = None
-                # Try to find role in first guild
-                if bot.guilds:
-                    role = bot.guilds[0].get_role(int(rid)) if rid else None
-                result['output'] = f"Would give role: {role.name if role else 'Unknown Role ID'}"
+                rid = resolved_data.get('role_id')
+                result['output'] = {"role_id": rid, "status": "Simulated (Role add)"}
                 
             return web.json_response(result)
         except Exception as e:
