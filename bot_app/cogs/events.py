@@ -1,7 +1,10 @@
 import discord
 from discord.ext import commands
 import time
+import logging
 from bot_app.core.state import loggers, user_spam_cooldowns, db
+
+logger = logging.getLogger(__name__)
 
 class EventsCog(commands.Cog):
     def __init__(self, bot):
@@ -12,27 +15,30 @@ class EventsCog(commands.Cog):
         if message.author.bot:
             return
         
-        # 1. Custom command handling logic from original bot_entry
-        # 1. Custom command handling logic: Clean up commands if they are valid
+        # 1. Flow Execution (Graph Engine)
+        if hasattr(self.bot, 'flow_interpreter'):
+            # Определяем тип триггера на основе контекста сообщения
+            if message.guild:
+                # Триггер для сообщений на сервере
+                await self.bot.flow_interpreter.handle_event("on_message_guild", {"message": message})
+            else:
+                # Триггер для личных сообщений
+                await self.bot.flow_interpreter.handle_event("on_message_dm", {"message": message})
+            
+            # Общий триггер (legacy/универсальный)
+            await self.bot.flow_interpreter.handle_event("on_message", {"message": message})
+
+        # 2. Command handling (deleting command trigger)
         if message.content.startswith("!"):
             ctx = await self.bot.get_context(message)
             if ctx.valid:
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
-        
-        # Note: bot.process_commands(message) is handled by the framework 
-        # unless on_message is overridden on the bot instance. 
-        # Since this is a listener, we don't need to call it manually 
-        # UNLESS we are overriding the main on_message. 
-        # However, to be safe and match original logic which might rely on specific order:
-        # We will let the default processor handle commands separately.
+                try: await message.delete()
+                except: pass
         
         if not message.guild:
             return
 
-        # 2. XP Logic
+        # 3. XP & Economy Logic
         uid = message.author.id
         now = time.time()
         if now - user_spam_cooldowns.get(uid, 0) > 2.0:
@@ -42,41 +48,41 @@ class EventsCog(commands.Cog):
                 await db.upsert_user(message.guild.id, uid, message.author.display_name)
                 await db.add_xp_and_words(message.guild.id, uid, min(len(words), 20), w_text=len(words), w_audio=0, words_list=words)
         
-        # 3. Logging Logic
+        # 4. Chat Logging (to archive/txt)
         l = loggers.get(message.guild.id)
         if l and l.is_recording:
             l.log_chat_message(message.author.name, message.content)
 
-        # 4. Custom Flows (Logic Builder)
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """Триггер на вход нового участника."""
         if hasattr(self.bot, 'flow_interpreter'):
-            await self.bot.flow_interpreter.handle_event("on_message", {"message": message})
+            await self.bot.flow_interpreter.handle_event("on_member_join", {"member": member, "guild": member.guild})
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if not member.guild: return
         
-        # Update Game Context
+        # Интеграция с интерпретатором (триггер входа в голос)
+        if hasattr(self.bot, 'flow_interpreter') and after.channel and not before.channel:
+            await self.bot.flow_interpreter.handle_event("on_voice_join", {"member": member, "channel": after.channel})
+
         if hasattr(self.bot, 'context_manager') and after.channel:
              await self.bot.context_manager.update_presence(member.guild, after.channel)
         
         l = loggers.get(member.guild.id)
         if not l or not l.is_recording: return
         
-        # --- 1. Handle BOT disconnect/move ---
         if member.id == self.bot.user.id:
-            # Bot disconnected
             if not after.channel:
-                l.log_event(time.time(), "🛑", "Бот отключен от канала (External Disconnect).")
+                l.log_event(time.time(), "🛑", "Бот отключен от канала.")
                 await l.stop()
                 return
-            
-            # Bot moved
             if before.channel and after.channel and before.channel.id != after.channel.id:
                 l.voice_channel_id = after.channel.id
                 l.log_event(time.time(), "🔄", f"Бот перемещен в канал: {after.channel.name}")
                 return
 
-        # --- 2. Handle USER events ---
         mon_id = l.voice_channel_id
         if after.channel and after.channel.id == mon_id and (not before.channel or before.channel.id != mon_id):
             if member.id != self.bot.user.id:
@@ -88,14 +94,11 @@ class EventsCog(commands.Cog):
     @commands.Cog.listener()
     async def on_presence_update(self, before, after):
         if not after.guild: return
-        
-        # Update Game Context
         if hasattr(self.bot, 'context_manager') and after.voice and after.voice.channel:
              await self.bot.context_manager.update_presence(after.guild, after.voice.channel)
              
         logger = loggers.get(after.guild.id)
         if not logger or not logger.is_recording: return
-        
         if not after.voice or not after.voice.channel or after.voice.channel.id != logger.voice_channel_id:
             return
 

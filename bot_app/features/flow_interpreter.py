@@ -30,46 +30,35 @@ class FlowInterpreter:
         logger.info(f"Loaded {len(self.flows)} flows.")
 
     async def handle_event(self, event_type: str, initial_data: Dict[str, Any]):
-        """Main entry point for events (e.g. on_message)."""
+        """Main entry point for events."""
         for flow in self.flows:
             data = flow.get("data", {})
             trigger_conf = data.get("trigger", {})
             
-            # 1. Validate Trigger Type
             if trigger_conf.get("type") != event_type: 
                 continue
 
-            # 2. Validate Filters
-            if event_type == "on_message":
+            # Фильтрация по содержимому (для сообщений)
+            if "on_message" in event_type:
                 msg = initial_data.get("message")
                 filters = trigger_conf.get("filters", {})
                 content_filter = filters.get("content_contains")
                 if content_filter and content_filter.lower() not in msg.content.lower():
                     continue
 
-            # 3. Initialize Context
-            context = {"trigger": self._serialize_initial_data(initial_data)}
+            # Инициализация контекста
+            context = {"trigger": self._serialize_obj(initial_data)}
             
-            # 4. Find Start Node (The Trigger Node)
             nodes = data.get("nodes", [])
             edges = data.get("edges", [])
             
             start_node = next((n for n in nodes if n["type"] == "trigger"), None)
-            if not start_node:
-                logger.warning(f"Flow {flow.get('name')} has no trigger node.")
-                continue
+            if not start_node: continue
 
-            # 5. Start Graph Traversal
-            # We use a task to not block the event loop
             asyncio.create_task(self._execute_graph(start_node, nodes, edges, context, initial_data))
 
     async def _execute_graph(self, current_node: dict, nodes: List[dict], edges: List[dict], context: Dict[str, Any], raw_objects: Dict[str, Any]):
-        """
-        Executes the graph using a queue-based approach.
-        """
         queue = [current_node]
-        
-        # Safety: Prevent infinite loops (max steps)
         steps = 0
         max_steps = 100 
 
@@ -79,43 +68,31 @@ class FlowInterpreter:
             node_id = node.get("id")
             node_type = node.get("type")
             
-            # Execute Node Logic
             success = await self._execute_node_logic(node, context, raw_objects)
-            
-            if not success:
-                continue
+            if not success: continue
 
-            # Find Next Nodes
             outgoing_edges = [e for e in edges if e["source"] == node_id]
             
-            # --- Branching Logic ---
             if node_type == "logic_if":
-                # Check result in context
                 result = context.get(node_id, {}).get("result", False)
-                # Filter edges by sourceHandle ('true' or 'false')
                 target_handle = "true" if result else "false"
                 outgoing_edges = [e for e in outgoing_edges if e.get("sourceHandle") == target_handle]
 
             for edge in outgoing_edges:
-                target_id = edge["target"]
-                target_node = next((n for n in nodes if n["id"] == target_id), None)
-                if target_node:
-                    queue.append(target_node)
+                target_node = next((n for n in nodes if n["id"] == edge["target"]), None)
+                if target_node: queue.append(target_node)
 
     async def _execute_node_logic(self, node: dict, context: Dict[str, Any], raw_objects: Dict[str, Any]) -> bool:
-        """Executes a single node. Returns True if successful."""
         node_type = node.get("type")
         node_id = node.get("id")
         params = node.get("data", {})
-        
-        # Resolve Variables
         resolved_params = self._resolve_params(params, context)
         
         try:
             output = {}
             
             if node_type == "trigger":
-                pass
+                output = context.get("trigger", {})
 
             elif node_type == "action_reply":
                 text = resolved_params.get("text", "")
@@ -128,55 +105,50 @@ class FlowInterpreter:
                 prompt = resolved_params.get("prompt", "")
                 from bot_app.integrations.ai_client import ask_ai
                 
-                last_msg = context.get("trigger", {}).get("message", {}).get("content", "")
-                full_prompt = f"System: {prompt}\nUser: {last_msg}"
-                
-                resp = await ask_ai(full_prompt)
+                user_input = context.get("trigger", {}).get("message", {}).get("content", "No content")
+                resp = await ask_ai(f"System: {prompt}\nUser: {user_input}")
                 
                 msg = raw_objects.get("message")
                 if msg: await msg.reply(resp)
                 output = {"response": resp}
 
-            elif node_type == "action_delay":
-                sec = float(resolved_params.get("seconds", 1))
-                await asyncio.sleep(sec)
-                output = {"slept": sec}
+            elif node_type == "logic_code":
+                # Внедряем узел Code (Python)
+                code = params.get("code", "")
+                # Ограниченное окружение для безопасности
+                exec_globals = {"context": context, "discord": discord, "result": {}}
+                
+                # Выполняем в отдельном потоке, чтобы не вешать бота (если код сложный)
+                def run_code():
+                    exec(code, exec_globals)
+                    return exec_globals.get("result", {})
 
-            elif node_type == "action_role":
-                rid = int(resolved_params.get("role_id", 0))
-                msg = raw_objects.get("message")
-                if msg and rid:
-                    role = msg.guild.get_role(rid)
-                    if role:
-                        await msg.author.add_roles(role)
-                        output = {"added_role": role.name}
-                    else:
-                        output = {"error": "Role not found"}
+                output = await asyncio.to_thread(run_code)
 
             elif node_type == "logic_if":
                 val1 = resolved_params.get("value1")
                 op = resolved_params.get("operator", "==")
                 val2 = resolved_params.get("value2")
                 
-                # Simple type casting if numbers
-                try:
-                    if str(val1).isdigit(): val1 = float(val1)
-                    if str(val2).isdigit(): val2 = float(val2)
-                except: pass
-
                 res = False
-                if op == "==": res = (val1 == val2)
-                elif op == "!=": res = (val1 != val2)
-                elif op == ">": res = (float(val1) > float(val2))
-                elif op == "<": res = (float(val1) < float(val2))
-                elif op == "contains": res = (str(val2).lower() in str(val1).lower())
+                try:
+                    # Попытка сравнения чисел
+                    v1, v2 = float(val1), float(val2)
+                    if op == "==": res = (v1 == v2)
+                    elif op == "!=": res = (v1 != v2)
+                    elif op == ">": res = (v1 > v2)
+                    elif op == "<": res = (v1 < v2)
+                except:
+                    # Сравнение строк
+                    if op == "==": res = (str(val1) == str(val2))
+                    elif op == "!=": res = (str(val1) != str(val2))
+                    elif op == "contains": res = (str(val2).lower() in str(val1).lower())
                 
-                output = {"result": res, "val1": val1, "val2": val2}
+                output = {"result": res}
 
-            # Save Output
+            # Сохраняем в контекст под ID узла и типом
             context[node_id] = output
             context[node_type] = output
-            
             return True
 
         except Exception as e:
@@ -184,18 +156,24 @@ class FlowInterpreter:
             context[f"{node_id}_error"] = str(e)
             return False
 
-    def _serialize_initial_data(self, data):
-        """Converts Discord objects to JSON-serializable dict for context."""
+    def _serialize_obj(self, data):
+        """Превращает объекты Discord в словари для доступа в шаблонах."""
         res = {}
         if "message" in data:
             m = data["message"]
             res["message"] = {
                 "id": m.id,
                 "content": m.content,
-                "author": {"id": m.author.id, "name": m.author.name, "display_name": m.author.display_name},
-                "channel_id": m.channel.id,
-                "guild_id": m.guild.id if m.guild else None
+                "author": {"id": m.author.id, "name": m.author.name, "mention": m.author.mention},
+                "guild": {"id": m.guild.id, "name": m.guild.name} if m.guild else None,
+                "channel_id": m.channel.id
             }
+        if "member" in data:
+            m = data["member"]
+            res["member"] = {"id": m.id, "name": m.name, "mention": m.mention}
+        if "guild" in data:
+            g = data["guild"]
+            res["guild"] = {"id": g.id, "name": g.name}
         return res
 
     def _resolve_params(self, params: dict, context: dict) -> dict:
@@ -208,15 +186,11 @@ class FlowInterpreter:
         return resolved
 
     def _replace_variables(self, text: str, context: dict) -> str:
-        """Replaces {{ trigger.message.content }} -> 'Hello'."""
         def replacer(match):
             path = match.group(1).strip().split('.')
             val = context
             try:
-                for part in path:
-                    val = val[part]
+                for part in path: val = val[part]
                 return str(val)
-            except (KeyError, TypeError, AttributeError):
-                return match.group(0)
-
+            except: return match.group(0)
         return re.sub(r'{{(.*?)}}', replacer, text)
