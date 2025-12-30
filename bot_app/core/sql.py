@@ -246,7 +246,7 @@ ON CONFLICT (guild_id, user_id) DO UPDATE SET
 GET_PROFILE = "SELECT profile_data FROM user_profiles WHERE guild_id=$1 AND user_id=$2"
 
 GET_ALL_PROFILES = """
-SELECT p.user_id, u.display_name, p.last_updated
+SELECT p.user_id, u.display_name, p.last_updated, p.profile_data
 FROM user_profiles p
 JOIN users u ON p.user_id = u.user_id AND p.guild_id = u.guild_id
 WHERE p.guild_id = $1

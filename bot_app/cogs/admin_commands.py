@@ -120,19 +120,19 @@ class AdminCommands(commands.Cog):
     @commands.command(name="update_achs")
     @commands.has_permissions(administrator=True)
     async def cmd_update_achs(self, ctx):
-        from bot_app.features.profile_manager import ProfileManager
+        from bot_app.features.achievements import AchievementsManager
         msg = await ctx.send(embed=discord.Embed(description="🏆 Раздаем ачивки (сегодня)...", color=discord.Color.blue()))
-        mgr = ProfileManager(self.db, ctx.guild.id)
-        res = await mgr.update_achievements(ctx.guild.name, days=1)
+        mgr = AchievementsManager(self.db)
+        res = await mgr.update_achievements(ctx.guild.id, ctx.guild.name, days=1)
         await msg.edit(embed=discord.Embed(description=res, color=discord.Color.green()))
 
     @commands.command(name="update_achs_all")
     @commands.has_permissions(administrator=True)
     async def cmd_update_achs_all(self, ctx):
-        from bot_app.features.profile_manager import ProfileManager
+        from bot_app.features.achievements import AchievementsManager
         msg = await ctx.send(embed=discord.Embed(description="🏆 Раздаем ачивки (5 дней)...", color=discord.Color.purple()))
-        mgr = ProfileManager(self.db, ctx.guild.id)
-        res = await mgr.update_achievements(ctx.guild.name, days=5)
+        mgr = AchievementsManager(self.db)
+        res = await mgr.update_achievements(ctx.guild.id, ctx.guild.name, days=5)
         await msg.edit(embed=discord.Embed(description=res, color=discord.Color.green()))
 
 async def setup(bot):

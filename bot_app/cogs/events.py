@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import time
+import asyncio
 import logging
 from bot_app.core.state import loggers, user_spam_cooldowns, db
 
@@ -75,8 +76,13 @@ class EventsCog(commands.Cog):
         
         if member.id == self.bot.user.id:
             if not after.channel:
-                l.log_event(time.time(), "🛑", "Бот отключен от канала.")
-                await l.stop()
+                # Potential 1006 disconnect. Wait a bit to see if it's a transient state or reconnecting.
+                await asyncio.sleep(5)
+                # Check again. If still disconnected and we haven't started stopping intentionally:
+                if not member.voice or not member.voice.channel:
+                    if l.is_recording and l.state != "stopping":
+                        l.log_event(time.time(), "🛑", "Бот отключен от канала (не удалось переподключиться).")
+                        await l.stop()
                 return
             if before.channel and after.channel and before.channel.id != after.channel.id:
                 l.voice_channel_id = after.channel.id

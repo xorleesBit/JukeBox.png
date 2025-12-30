@@ -34,13 +34,12 @@ class ProfileManager:
             return self._cache[cache_key]
 
         data = await self.db.get_profile(guild_id, user_id)
-        if not data:
-            profile = DEFAULT_PROFILE.copy()
-        else:
-            profile = DEFAULT_PROFILE.copy()
-            # Ensure defaults for missing keys
-            for k, v in DEFAULT_PROFILE.items():
-                if k not in profile:
+        
+        profile = DEFAULT_PROFILE.copy()
+        if data and isinstance(data, dict):
+            # Merge stored data into default template
+            for k, v in data.items():
+                if k in DEFAULT_PROFILE:
                     profile[k] = v
             
         self._cache[cache_key] = profile
@@ -61,7 +60,7 @@ class ProfileManager:
         """Returns a string description of the user for AI Prompt."""
         p = await self.get_profile(guild_id, user_id)
         
-        name = p['real_name'] or display_name
+        name = p.get('real_name') or display_name
         gender_map = {"male": "мужчина", "female": "женщина", "neutral": "игрок"}
         gender_str = gender_map.get(p.get('gender', 'neutral'), "игрок")
         
@@ -81,16 +80,23 @@ class ProfileManager:
         """
         from bot_app.integrations.ai_client import ask_ai
         
-        profiles_data = await self.db.get_all_profiles(guild_id)
-        if not profiles_data:
+        profiles_rows = await self.db.get_all_profiles(guild_id)
+        if not profiles_rows:
             return "Нет профилей для анализа."
         
         summary_lines = []
-        for uid, p in profiles_data.items():
+        for row in profiles_rows:
+            # profiles_rows is a list of Records (p.user_id, u.display_name, p.profile_data)
+            uid = row['user_id']
+            uname = row['display_name']
+            p_json = row['profile_data']
+            
+            p = json.loads(p_json) if isinstance(p_json, str) else p_json
+            
             # Minimal info to save tokens
-            name = p.get('real_name') or f"User{uid}"
+            real_name = p.get('real_name') or uname
             bio = p.get('bio', '')[:50]
-            summary_lines.append(f"User {uid}: {name} ({bio})")
+            summary_lines.append(f"User {uid}: {real_name} ({bio})")
             
         context = "\n".join(summary_lines[:20]) # Limit to 20 users
         
