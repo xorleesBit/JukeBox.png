@@ -77,11 +77,17 @@ class EventsCog(commands.Cog):
         if member.id == self.bot.user.id:
             if not after.channel:
                 # Potential 1006 disconnect. Wait a bit to see if it's a transient state or reconnecting.
-                await asyncio.sleep(5)
+                await asyncio.sleep(15)
                 # Check again. If still disconnected and we haven't started stopping intentionally:
+                # Refresh member to ensure cache is up to date
+                try:
+                    m = member.guild.get_member(member.id)
+                    if m: member = m
+                except: pass
+
                 if not member.voice or not member.voice.channel:
                     if l.is_recording and l.state != "stopping":
-                        l.log_event(time.time(), "🛑", "Бот отключен от канала (не удалось переподключиться).")
+                        l.log_event(time.time(), "🛑", "Бот отключен от канала (не удалось переподключиться за 15с).")
                         await l.stop()
                 return
             if before.channel and after.channel and before.channel.id != after.channel.id:

@@ -20,15 +20,22 @@ async def send_embed(ctx, title: str, description: str, color: discord.Color, ep
     
     # If it's an interaction (Slash command context)
     if isinstance(ctx, discord.Interaction):
+        kwargs = {"embed": embed, "ephemeral": ephemeral}
+        if view is not None:
+            kwargs["view"] = view
+
         # Interactions don't support delete_after directly in response, but do in followup/channel send
         # We generally prefer ephemeral for interactions if requested
         if ctx.response.is_done():
-            await ctx.followup.send(embed=embed, ephemeral=ephemeral, view=view)
+            await ctx.followup.send(**kwargs)
         else:
-            await ctx.response.send_message(embed=embed, ephemeral=ephemeral, view=view)
+            await ctx.response.send_message(**kwargs)
     else:
         # Standard Context
-        await ctx.send(embed=embed, view=view, delete_after=delete_after)
+        kwargs = {"embed": embed, "delete_after": delete_after}
+        if view is not None:
+            kwargs["view"] = view
+        await ctx.send(**kwargs)
 
 async def send_success(ctx, message: str, title: str = "Успешно", ephemeral: bool = False, delete_after: int = 10):
     await send_embed(ctx, f"✅ {title}", message, COLOR_SUCCESS, ephemeral, delete_after=delete_after)

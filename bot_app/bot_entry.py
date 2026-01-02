@@ -86,10 +86,11 @@ bot.ensure_panel_func = lambda g, force_create_channel=False: panel_control.ensu
 
 @bot.event
 async def on_ready():
+    # Setup Audio
+    audio_setup.setup_audio_libraries()
+    
     import discord.opus
     print(f"🔊 Opus Loaded: {discord.opus.is_loaded()}")
-
-    # Initialize Global HTTP Session from pool
     if state.http_session is None or state.http_session.closed:
         state.http_session = await http_pool.get_session()
         print("✅ Global HTTP Session initialized")
