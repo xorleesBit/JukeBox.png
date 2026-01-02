@@ -344,8 +344,8 @@ class DebugView(discord.ui.View):
         desc = f"Target: **{target_g.name if target_g else 'None'}**"
         await itx.response.edit_message(embed=discord.Embed(title="⚡ Actions", description=desc), view=self)
 
-    def _add_back_btn(self):
-        btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=4)
+    def _add_back_btn(self, row=4):
+        btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=row)
         async def back(i):
             self._setup_main()
             embed = await self.get_status_embed()
