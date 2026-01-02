@@ -2,10 +2,65 @@ import discord
 import sys
 import os
 import time
-import platform
-import psutil
+import glob
+import re
 from bot_app.core.dev_manager import dev_manager
 from bot_app.features.error_handler import get_log_files, read_log_segment
+
+# Path to console logs (defined in bot_entry.py)
+CONSOLE_LOG_DIR = "logs/console"
+
+def get_console_logs():
+    if not os.path.exists(CONSOLE_LOG_DIR):
+        return []
+    files = glob.glob(os.path.join(CONSOLE_LOG_DIR, "*.log*"))
+    # Sort by modification time (newest first)
+    files.sort(key=os.path.getmtime, reverse=True)
+    return [os.path.basename(f) for f in files]
+
+def aggregate_errors(days=7):
+    """Scans last N days of logs for errors."""
+    if not os.path.exists(CONSOLE_LOG_DIR):
+        return None
+        
+    files = get_console_logs()[:days] # Simple approximation: take N newest files (usually 1 per day) 
+    
+    error_lines = []
+    
+    for fname in files:
+        path = os.path.join(CONSOLE_LOG_DIR, fname)
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                
+            # Find blocks of errors
+            # Simple heuristic: Lines containing [ERROR] or Traceback, plus context
+            lines = content.splitlines()
+            for i, line in enumerate(lines):
+                if "[ERROR]" in line or "Traceback (most recent call last)" in line:
+                    # Add a header for context
+                    error_lines.append(f"\n--- From {fname} Line {i+1} ---")
+                    # Capture user/guild context if nearby (simple lookback)
+                    if i > 0: error_lines.append(lines[i-1])
+                    
+                    error_lines.append(line)
+                    
+                    # Capture stack trace (lookahead until empty line or next timestamp)
+                    j = i + 1
+                    while j < len(lines) and j < i + 20: # Limit stack trace depth
+                        next_line = lines[j]
+                        # Stop if new log entry starts (usually starts with YYYY-MM-DD)
+                        if re.match(r"\d{4}-\d{2}-\d{2}", next_line):
+                            break
+                        error_lines.append(next_line)
+                        j += 1
+        except Exception as e:
+            error_lines.append(f"Failed to read {fname}: {e}")
+            
+    if not error_lines:
+        return None
+        
+    return "\n".join(error_lines)
 
 class SQLModal(discord.ui.Modal, title="Execute SQL"):
     query = discord.ui.TextInput(label="Query", style=discord.TextStyle.paragraph, placeholder="SELECT * FROM users LIMIT 1;")
@@ -71,7 +126,7 @@ class DebugView(discord.ui.View):
         # Navigation
         select = discord.ui.Select(placeholder="Debug Tools...", row=1, options=[
             discord.SelectOption(label="System Status", emoji="🖥️", value="status"),
-            discord.SelectOption(label="Error Logs", emoji="📜", value="logs"),
+            discord.SelectOption(label="Console Logs", emoji="📜", value="logs"),
             discord.SelectOption(label="Actions (Server)", emoji="⚡", value="actions"),
             discord.SelectOption(label="Database", emoji="🗄️", value="sql"),
         ])
@@ -87,6 +142,7 @@ class DebugView(discord.ui.View):
         self.add_item(select)
 
     async def get_status_embed(self):
+        import psutil
         mem = psutil.virtual_memory()
         cpu = psutil.cpu_percent()
         ping = round(self.bot.latency * 1000)
@@ -115,26 +171,45 @@ class DebugView(discord.ui.View):
 
     async def _show_logs_menu(self, itx):
         self.clear_items()
-        files = get_log_files()
+        files = get_console_logs()
         
-        if not files:
-            self._add_back_btn()
-            return await itx.response.edit_message(embed=discord.Embed(title="No Logs", color=discord.Color.red()), view=self)
+        embed = discord.Embed(title="📜 Console Logs Management", description="Select a log file to download or generate an error report.", color=discord.Color.gold())
+        
+        # 1. Select specific log file
+        if files:
+            sel = discord.ui.Select(placeholder="Download Log File...", min_values=1, max_values=1, options=[
+                discord.SelectOption(label=f, value=f) for f in files[:25]
+            ], row=0)
             
-        sel = discord.ui.Select(placeholder="Select Log File...", options=[
-            discord.SelectOption(label=f, value=f) for f in files[:25]
-        ])
-        
-        async def log_cb(i):
-            fname = sel.values[0]
-            content = read_log_segment(fname, lines=15)
-            if len(content) > 1000: content = content[-1000:]
-            await i.response.send_message(f"📄 **{fname}**\n```\n{content}\n```", ephemeral=True)
-        
-        sel.callback = log_cb
-        self.add_item(sel)
+            async def download_cb(i):
+                fname = sel.values[0]
+                path = os.path.join(CONSOLE_LOG_DIR, fname)
+                if os.path.exists(path):
+                    await i.response.send_message(file=discord.File(path), ephemeral=True)
+                else:
+                    await i.response.send_message("❌ File not found.", ephemeral=True)
+            
+            sel.callback = download_cb
+            self.add_item(sel)
+        else:
+            embed.description = "No console logs found."
+
+        # 2. Aggregate Errors Button
+        btn_err = discord.ui.Button(label="Собрать ошибки (7 дней)", style=discord.ButtonStyle.danger, emoji="🚨", row=1)
+        async def err_cb(i):
+            await i.response.defer(ephemeral=True)
+            report = aggregate_errors(7)
+            if report:
+                import io
+                f = io.BytesIO(report.encode("utf-8"))
+                await i.followup.send("🚨 **Weekly Error Report**", file=discord.File(f, filename="weekly_errors.txt"))
+            else:
+                await i.followup.send("✅ No errors found in the last 7 days of logs.", ephemeral=True)
+        btn_err.callback = err_cb
+        self.add_item(btn_err)
+
         self._add_back_btn()
-        await itx.response.edit_message(embed=discord.Embed(title="📜 Error Logs"), view=self)
+        await itx.response.edit_message(embed=embed, view=self)
 
     async def _show_actions(self, itx):
         self.clear_items()
@@ -229,15 +304,42 @@ class DebugView(discord.ui.View):
         btn_reload.callback = reload_cb
         self.add_item(btn_reload)
 
-        # 4. Restart (Global)
-        btn_restart = discord.ui.Button(label="RESTART BOT", style=discord.ButtonStyle.danger, emoji="💀", row=3)
+        # 4. NUKE PHRASES (Guild)
+        btn_nuke = discord.ui.Button(label="NUKE PHRASES ☢️", style=discord.ButtonStyle.danger, row=3, disabled=(not target_g))
+        async def nuke_cb(i):
+            if not target_g: return
+            await i.response.defer(ephemeral=True)
+            try:
+                # 1. Delete from DB and get paths
+                rows = await self.bot.db.pool.fetch("DELETE FROM prank_phrases WHERE guild_id=$1 RETURNING mp3_path", self.target_guild_id)
+                db_count = len(rows)
+                
+                # 2. Delete files
+                files_deleted = 0
+                for row in rows:
+                    path = row['mp3_path']
+                    if path and os.path.exists(path):
+                        try:
+                            os.remove(path)
+                            files_deleted += 1
+                        except: pass
+                
+                await i.followup.send(f"☢️ **NUKE COMPLETE**\nDeleted Records: `{db_count}`\nDeleted Files: `{files_deleted}`", ephemeral=True)
+            except Exception as e:
+                await i.followup.send(f"❌ Error: {e}", ephemeral=True)
+                
+        btn_nuke.callback = nuke_cb
+        self.add_item(btn_nuke)
+
+        # 5. Restart (Global)
+        btn_restart = discord.ui.Button(label="RESTART BOT", style=discord.ButtonStyle.danger, emoji="💀", row=4)
         async def restart_cb(i):
             await i.response.send_message("🔄 Restarting...", ephemeral=True)
             os.execv(sys.executable, ['python'] + sys.argv)
         btn_restart.callback = restart_cb
         self.add_item(btn_restart)
 
-        self._add_back_btn()
+        self._add_back_btn(row=4)
         
         desc = f"Target: **{target_g.name if target_g else 'None'}**"
         await itx.response.edit_message(embed=discord.Embed(title="⚡ Actions", description=desc), view=self)

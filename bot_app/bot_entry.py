@@ -25,11 +25,17 @@ from .features.ai_manager import AIManager
 from .features.flow_interpreter import FlowInterpreter
 
 # --- Logging ---
+from logging.handlers import TimedRotatingFileHandler
+
+log_dir = "logs/console"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "bot.log")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler("bot_debug.log", encoding="utf-8"),
+        TimedRotatingFileHandler(log_file, when="midnight", interval=1, backupCount=30, encoding="utf-8"),
         logging.StreamHandler(sys.stdout)
     ]
 )

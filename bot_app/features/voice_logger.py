@@ -303,6 +303,10 @@ class VoiceLogger:
 
         # Intercept PCM in Sink
         def on_pcm_wrapper(uid, ts, pcm):
+            # Ignore packets from unknown users (SSRC mapping incomplete) to prevent noise
+            if uid is None or uid == 0:
+                return
+
             self._check_activity(pcm) # Energy check
             if self.sampler:
                 self.sampler.feed(uid, ts, pcm)
