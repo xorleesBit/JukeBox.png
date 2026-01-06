@@ -121,6 +121,10 @@ def reconstruct_user_audio(packets: list, start_ts: float = None, end_ts: float 
             packet_arr = packet_arr[skip:]
             idx_start = 0
 
+        # Safety: Ensure start is within bounds
+        if idx_start >= len(canvas):
+            continue
+
         idx_end = idx_start + len(packet_arr)
         
         # Bounds check against canvas

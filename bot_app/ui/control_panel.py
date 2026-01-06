@@ -175,13 +175,14 @@ class ControlPanelView(discord.ui.View):
 
     @discord.ui.button(label="Пауза", style=discord.ButtonStyle.secondary, row=0, custom_id="cp:pause")
     async def btn_pause(self, interaction: discord.Interaction, _):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+            
         logger = self.app.loggers.get(self.guild_id)
         if logger:
             logger.is_paused = not logger.is_paused
             await logger.update_dashboard()
         
-        if not interaction.response.is_done():
-            await interaction.response.defer()
         await self.refresh(interaction)
         
     @discord.ui.button(label="Обновить", style=discord.ButtonStyle.secondary, emoji="🔄", row=0, custom_id="cp:refresh")

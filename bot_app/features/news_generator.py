@@ -180,6 +180,11 @@ async def generate_news_json(guild_id: int, guild_name: str, days: int = 1) -> d
     try:
         raw_resp = await ask_ai(user_prompt, system_prompt=system_prompt)
         clean_resp = _extract_json_safe(raw_resp)
+        
+        if not clean_resp or not clean_resp.strip().startswith("{"):
+            logger.error(f"AI returned empty or invalid JSON: {raw_resp}")
+            return {"error": "AI вернул некорректный формат (не JSON)."}
+            
         data = json.loads(clean_resp)
         
         # --- FEED ECHO BUFFER ---

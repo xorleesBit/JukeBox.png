@@ -53,18 +53,27 @@ def transcribe_file_assembly_sentences(file_source, abs_chunk_start_ts: float, u
             return []
 
         # 3. Process Sentences
-        sentences = transcript.get_sentences()
-        
-        results = []
-        for sent in sentences:
-            # Assembly timestamps are in milliseconds
-            start_offset_sec = sent.start / 1000.0
-            results.append((
-                abs_chunk_start_ts + start_offset_sec,
-                f"{user_name}: {sent.text}"
-            ))
+        try:
+            sentences = transcript.get_sentences()
             
-        logger.info(f"AssemblyAI finished: {len(results)} sentences.")
+            results = []
+            for sent in sentences:
+                # Assembly timestamps are in milliseconds
+                start_offset_sec = sent.start / 1000.0
+                results.append((
+                    abs_chunk_start_ts + start_offset_sec,
+                    f"{user_name}: {sent.text}"
+                ))
+        except Exception as e:
+            logger.warning(f"AssemblyAI get_sentences() failed: {e}. Fallback to raw text.")
+            results = []
+            if transcript.text:
+                 results.append((
+                    abs_chunk_start_ts,
+                    f"{user_name}: {transcript.text}"
+                ))
+            
+        logger.info(f"AssemblyAI finished: {len(results)} sentences/segments.")
         return results
 
     except Exception as e:

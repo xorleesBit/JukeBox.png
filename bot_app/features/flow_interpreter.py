@@ -21,10 +21,18 @@ class FlowInterpreter:
         if not os.path.exists(self.flows_dir): return
         for filename in os.listdir(self.flows_dir):
             if filename.endswith(".json"):
+                path = os.path.join(self.flows_dir, filename)
                 try:
-                    with open(os.path.join(self.flows_dir, filename), 'r', encoding='utf-8') as f:
+                    # Check for empty file
+                    if os.path.getsize(path) == 0:
+                        logger.warning(f"Skipping empty flow file: {filename}")
+                        continue
+                        
+                    with open(path, 'r', encoding='utf-8') as f:
                         flow = json.load(f)
                         self.flows.append(flow)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Skipping invalid JSON flow {filename}: {e}")
                 except Exception as e:
                     logger.error(f"Failed to load flow {filename}: {e}")
         logger.info(f"Loaded {len(self.flows)} flows.")
