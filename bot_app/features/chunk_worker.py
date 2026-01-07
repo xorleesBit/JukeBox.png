@@ -281,9 +281,9 @@ class ChunkProcessor:
                 if not valid_segments:
                     continue
                     
-                combined_audio = AudioSegment.silent(duration=0, frame_rate=16000, channels=1) 
+                combined_audio = AudioSegment.silent(duration=0, frame_rate=16000) 
                 time_map = [] 
-                silence_pad = AudioSegment.silent(duration=1000, frame_rate=16000, channels=1)
+                silence_pad = AudioSegment.silent(duration=1000, frame_rate=16000)
                 
                 for seg in valid_segments:
                     # Request 16k Mono directly for STT
