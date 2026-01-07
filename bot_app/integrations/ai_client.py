@@ -1,15 +1,28 @@
 import aiohttp
 import asyncio
 import logging
+import time
 from bot_app.core import state # Access global state
 
 logger = logging.getLogger(__name__)
+
+# --- Circuit Breaker State ---
+_circuit_errors = 0
+_circuit_open_ts = 0
+CIRCUIT_THRESHOLD = 5
+CIRCUIT_TIMEOUT = 60
 
 async def ask_ai(prompt: str, system_prompt: str = None, retries: int = 3) -> str:
     """
     Generic OpenAI-compatible completion function.
     Uses dynamic configuration from state.ai_manager.
     """
+    global _circuit_errors, _circuit_open_ts
+
+    # 0. Check Circuit Breaker
+    if time.time() - _circuit_open_ts < CIRCUIT_TIMEOUT:
+        return "⚠️ AI Circuit Open (API Unstable). Try again later."
+
     # 1. Get Config
     provider = None
     if state.ai_manager:
@@ -65,10 +78,17 @@ async def ask_ai(prompt: str, system_prompt: str = None, retries: int = 3) -> st
                         continue
                         
                     if resp.status != 200:
+                        _circuit_errors += 1
+                        if _circuit_errors >= CIRCUIT_THRESHOLD:
+                            _circuit_open_ts = time.time()
+                            logger.error(f"AI Circuit Breaker TRIPPED. Pause for {CIRCUIT_TIMEOUT}s.")
+                        
                         text = await resp.text()
-                        logger.error(f"AI API Error: {resp.status} (URL: {url}) - {text[:200]}...")
+                        logger.warning(f"AI API Warning: {resp.status} (URL: {url}) - {text[:200]}...")
                         return f"⚠️ Ошибка API AI: {resp.status}"
                     
+                    # Success
+                    _circuit_errors = 0
                     result = await resp.json()
                     if 'choices' in result and len(result['choices']) > 0:
                         return result['choices'][0]['message']['content']
@@ -92,6 +112,11 @@ async def ask_ai(prompt: str, system_prompt: str = None, retries: int = 3) -> st
 
         except Exception as e:
             logger.exception("AI Request Failed")
+            _circuit_errors += 1
+            if _circuit_errors >= CIRCUIT_THRESHOLD:
+                _circuit_open_ts = time.time()
+                logger.error(f"AI Circuit Breaker TRIPPED on Exception. Pause for {CIRCUIT_TIMEOUT}s.")
+            
             if attempt == retries - 1:
                 return f"⚠️ Ошибка при запросе: {e}"
             await asyncio.sleep(2)

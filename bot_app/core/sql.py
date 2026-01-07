@@ -366,7 +366,7 @@ DELETE_AFK = "DELETE FROM afk_status WHERE user_id=$1"
 # --- SAFETY & CLEANUP ---
 DELETE_ALL_NON_FAV_PHRASES = """
 DELETE FROM prank_phrases 
-WHERE guild_id=$1 AND is_favorite=FALSE
+WHERE guild_id=$1 AND is_favorite IS NOT TRUE
 """
 
 # Daily & Economy

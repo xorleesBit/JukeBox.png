@@ -121,17 +121,9 @@ class FlowInterpreter:
                 output = {"response": resp}
 
             elif node_type == "logic_code":
-                # Внедряем узел Code (Python)
-                code = params.get("code", "")
-                # Ограниченное окружение для безопасности
-                exec_globals = {"context": context, "discord": discord, "result": {}}
-                
-                # Выполняем в отдельном потоке, чтобы не вешать бота (если код сложный)
-                def run_code():
-                    exec(code, exec_globals)
-                    return exec_globals.get("result", {})
-
-                output = await asyncio.to_thread(run_code)
+                # SECURITY: Arbitrary code execution is disabled.
+                logger.warning(f"Flow {node_id} attempted to use 'logic_code' with exec(). Blocked.")
+                output = {"error": "Custom code execution is disabled for security."}
 
             elif node_type == "logic_if":
                 val1 = resolved_params.get("value1")

@@ -32,16 +32,23 @@ os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "bot.log")
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING, # Default: Only Warnings and Errors
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         TimedRotatingFileHandler(log_file, when="midnight", interval=1, backupCount=30, encoding="utf-8"),
         logging.StreamHandler(sys.stdout)
     ]
 )
-# Silence noisy loggers
-for lib in ["discord.ext.voice_recv.reader", "discord.ext.voice_recv.rtp", "discord.ext.voice_recv.opus"]:
+
+# Exception: We want to see Played Phrases (INFO)
+logging.getLogger("bot_app.features.prank_manager").setLevel(logging.INFO)
+
+# Silence noisy loggers (Double check)
+for lib in ["discord.ext.voice_recv.reader", "discord.ext.voice_recv.rtp", "discord.ext.voice_recv.opus", "httpx", "discord.gateway"]:
     logging.getLogger(lib).setLevel(logging.ERROR)
+
+# Suppress CryptoError spam (external lib issue)
+logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.CRITICAL)
 
 warnings.filterwarnings("ignore", message="Couldn't find ffmpeg or avconv*", category=RuntimeWarning)
 

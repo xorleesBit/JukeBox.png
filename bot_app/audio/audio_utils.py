@@ -4,145 +4,104 @@ from pydub import AudioSegment
 
 logger = logging.getLogger(__name__)
 
-def reconstruct_user_audio(packets: list, start_ts: float = None, end_ts: float = None) -> AudioSegment:
+def reconstruct_user_audio(packets: list, start_ts: float = None, end_ts: float = None, sample_rate: int = 48000, channels: int = 2) -> np.ndarray:
     """
     Reconstructs user audio with De-Jitter logic.
-    Fixes 'stuttering' by snapping jittery packets to a continuous grid,
-    while preserving true DTX pauses.
+    Fixes 'stuttering' by snapping jittery packets to a continuous grid.
     """
     if not packets:
-        return AudioSegment.silent(duration=0)
+        return np.array([], dtype=np.int16)
 
     # 1. Sort
     packets.sort(key=lambda x: x[0])
     
     # 2. Audio Params
-    SAMPLE_RATE = 48000
-    CHANNELS = 2
+    # Input is always 48000 Stereo (Discord Standard)
+    IN_RATE = 48000
+    IN_CHANNELS = 2
+    
     SAMPLE_WIDTH = 2
-    BYTES_PER_SAMPLE = 4 # 2 channels * 2 bytes
-    SAMPLES_PER_MS = 48 # 48000 / 1000
-    FRAME_DURATION_MS = 20 # Standard Discord frame
-    FRAME_SAMPLES = 960 # 20ms * 48khz
+    BYTES_PER_SAMPLE = channels * SAMPLE_WIDTH
     
     # 3. De-Jitter / Timestamp Correction
-    # We build a list of (corrected_offset_samples, pcm_data)
-    
     aligned_chunks = []
-    
     base_ts = start_ts if start_ts is not None else packets[0][0]
-    
-    # Cursor tracks where the NEXT packet "should" start in a continuous stream
-    # relative to base_ts (in seconds)
     expected_next_ts = packets[0][0] - base_ts
-    
-    # If the first packet is way after start_ts, we respect that initial silence
-    # But we treat the first packet's arrival as the anchor for the stream
     if expected_next_ts < 0: expected_next_ts = 0
     
     for ts, pcm in packets:
-        # Current packet's relative arrival time
         rel_ts = ts - base_ts
         if rel_ts < 0: rel_ts = 0
         
-        # Calculate gap from expected
         diff = rel_ts - expected_next_ts
-        
-        # Jitter Threshold: 60ms (0.06s). 
-        # If gap is smaller than this, it's just lag -> Snap to expected.
-        # If gap is larger, it's silence -> Move cursor to actual.
         if diff > 0.06:
-            # Real silence (DTX)
             write_ts = rel_ts
         elif diff < -0.06:
-            # Overlap/Out of order? (Should be rare with sort)
-            # We just place it where it says, or skip?
-            # Let's trust timestamp if it's WAY off, but usually we just snap.
             write_ts = rel_ts
         else:
-            # Jitter -> Snap to continuous
             write_ts = expected_next_ts
             
-        # Convert to samples
-        start_sample = int(write_ts * SAMPLE_RATE)
+        start_sample = int(write_ts * sample_rate)
         
-        aligned_chunks.append((start_sample, pcm))
+        # --- Conversion Logic (Input 48k Stereo -> Target) ---
+        packet_arr = np.frombuffer(pcm, dtype=np.int16)
         
-        # Advance cursor
-        # Calculate duration of THIS packet from bytes
-        # len(pcm) / 4 bytes_per_sample = num_samples
-        packet_samples = len(pcm) // BYTES_PER_SAMPLE
-        packet_duration_s = packet_samples / SAMPLE_RATE
+        # 1. Convert to Mono if needed
+        if channels == 1 and IN_CHANNELS == 2:
+            # Reshape to (N, 2), then mean across channels
+            packet_arr = packet_arr.reshape(-1, 2).mean(axis=1).astype(np.int16)
         
+        # 2. Downsample if needed (48k -> 16k is factor of 3)
+        if sample_rate == 16000 and IN_RATE == 48000:
+            packet_arr = packet_arr[::3]
+        
+        aligned_chunks.append((start_sample, packet_arr))
+        
+        # Advance cursor (based on target sample rate)
+        packet_samples = len(packet_arr) // channels
+        packet_duration_s = packet_samples / sample_rate
         expected_next_ts = write_ts + packet_duration_s
 
     if not aligned_chunks:
-        return AudioSegment.silent(duration=0)
+        return np.array([], dtype=np.int16)
 
     # 4. Determine total size
-    last_start, last_pcm = aligned_chunks[-1]
-    last_len = len(last_pcm) // BYTES_PER_SAMPLE
-    
+    last_start, last_pcm_arr = aligned_chunks[-1]
+    last_len = len(last_pcm_arr) // channels
     total_samples_needed = last_start + last_len
     
-    # If end_ts provided, ensure we cover it (or trim?)
-    # Usually we just want the audio content. Padding to end_ts happens in mixing.
-    # But let's respect end_ts if it implies longer silence at end.
     if end_ts is not None:
         req_duration = end_ts - base_ts
-        req_samples = int(req_duration * SAMPLE_RATE)
+        req_samples = int(req_duration * sample_rate)
         if req_samples > total_samples_needed:
             total_samples_needed = req_samples
 
     # 5. Build Canvas
-    # Shape: (N, 2) for stereo, or flat (N*2,). 
-    # Working with flat int16 array is easiest for pydub.
-    # Size = samples * channels
-    canvas_size = total_samples_needed * CHANNELS
-    
-    # Align to even
-    if canvas_size % 2 != 0: canvas_size += 1
-    
+    canvas_size = total_samples_needed * channels
     canvas = np.zeros(canvas_size, dtype=np.int16)
     
     # 6. Paint
-    for start_sample, pcm in aligned_chunks:
-        # pcm is bytes -> int16
-        packet_arr = np.frombuffer(pcm, dtype=np.int16)
+    for start_sample, p_arr in aligned_chunks:
+        idx_start = start_sample * channels
         
-        # start_sample is in "stereo frames". Array index is * 2.
-        idx_start = start_sample * CHANNELS
-        
-        # Safety: Ensure non-negative start
         if idx_start < 0: 
-            # Trim from beginning if needed
             skip = abs(idx_start)
-            if skip >= len(packet_arr): continue
-            packet_arr = packet_arr[skip:]
+            if skip >= len(p_arr): continue
+            p_arr = p_arr[skip:]
             idx_start = 0
 
-        # Safety: Ensure start is within bounds
         if idx_start >= len(canvas):
             continue
 
-        idx_end = idx_start + len(packet_arr)
-        
-        # Bounds check against canvas
+        idx_end = idx_start + len(p_arr)
         if idx_end > len(canvas):
-            packet_arr = packet_arr[:len(canvas)-idx_start]
-            idx_end = idx_start + len(packet_arr)
+            p_arr = p_arr[:len(canvas)-idx_start]
+            idx_end = idx_start + len(p_arr)
         
-        if len(packet_arr) == 0:
-            continue
-            
-        canvas[idx_start:idx_end] = packet_arr
+        if len(p_arr) == 0: continue
+        canvas[idx_start:idx_end] = p_arr
         
-    return AudioSegment(
-        data=canvas.tobytes(),
-        sample_width=SAMPLE_WIDTH,
-        frame_rate=SAMPLE_RATE,
-        channels=CHANNELS
-    )
+    return canvas
 
 def get_speech_segments(packets: list, gap_threshold: float = 1.5) -> list:
     """

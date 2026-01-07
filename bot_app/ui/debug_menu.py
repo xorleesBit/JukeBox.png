@@ -310,21 +310,10 @@ class DebugView(discord.ui.View):
             if not target_g: return
             await i.response.defer(ephemeral=True)
             try:
-                # 1. Delete from DB and get paths
-                rows = await self.bot.db.pool.fetch("DELETE FROM prank_phrases WHERE guild_id=$1 RETURNING mp3_path", self.target_guild_id)
-                db_count = len(rows)
+                # 1. Use Safe Delete (Respects Favorites)
+                await self.bot.db.delete_all_non_fav_phrases(self.target_guild_id)
                 
-                # 2. Delete files
-                files_deleted = 0
-                for row in rows:
-                    path = row['mp3_path']
-                    if path and os.path.exists(path):
-                        try:
-                            os.remove(path)
-                            files_deleted += 1
-                        except: pass
-                
-                await i.followup.send(f"☢️ **NUKE COMPLETE**\nDeleted Records: `{db_count}`\nDeleted Files: `{files_deleted}`", ephemeral=True)
+                await i.followup.send(f"☢️ **CLEANUP COMPLETE**\nDeleted all NON-FAVORITE phrases for {target_g.name}.", ephemeral=True)
             except Exception as e:
                 await i.followup.send(f"❌ Error: {e}", ephemeral=True)
                 

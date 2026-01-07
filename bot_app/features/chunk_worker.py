@@ -6,6 +6,7 @@ import threading
 import logging
 import io
 import tempfile
+import numpy as np
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -184,23 +185,38 @@ class ChunkProcessor:
             logger.info("Chunk is empty (silence). Skipping.")
             return
 
-        # --- 2. Human Pipeline (Mixing) ---
-        # Optimized with in-memory buffer for mixing? 
-        # Actually AudioSegment writes to disk for export(mp3). That's fine for the final file.
+        # --- 2. Human Pipeline (Fast 16kHz Mono Mixing) ---
+        SAMPLE_RATE = 16000
+        CHANNELS = 1 # Mono is 6x lighter than 48k Stereo
+        
         mix_duration_sec = global_max_ts - global_min_ts
         if mix_duration_sec < 0.1: mix_duration_sec = 0.1
         
-        mix_duration_ms = int(mix_duration_sec * 1000)
-        full_mix = AudioSegment.silent(duration=mix_duration_ms, frame_rate=48000)
+        total_samples = int(mix_duration_sec * SAMPLE_RATE)
+        full_mix_arr = np.zeros(total_samples * CHANNELS, dtype=np.int32)
         
         speech_stats = {} 
 
         for user_id, packets in loaded_data.items():
-            track = reconstruct_user_audio(packets, global_min_ts, global_max_ts)
-            if len(track) > mix_duration_ms:
-                track = track[:mix_duration_ms]
-            full_mix = full_mix.overlay(track)
+            # Get 16k Mono Track directly
+            track_arr = reconstruct_user_audio(packets, global_min_ts, global_max_ts, sample_rate=SAMPLE_RATE, channels=CHANNELS)
+            
+            common_len = min(len(full_mix_arr), len(track_arr))
+            if common_len > 0:
+                full_mix_arr[:common_len] += track_arr[:common_len]
+            
             speech_stats[user_id] = len(packets) * 0.02
+
+        # Normalize/Clip back to Int16
+        np.clip(full_mix_arr, -32768, 32767, out=full_mix_arr)
+        final_mix_int16 = full_mix_arr.astype(np.int16)
+        
+        full_mix = AudioSegment(
+            data=final_mix_int16.tobytes(),
+            sample_width=2,
+            frame_rate=SAMPLE_RATE,
+            channels=CHANNELS
+        )
 
         # Export Human Mix
         mp3_path = os.path.join(job.base_dir, "last_mix.mp3")
@@ -219,119 +235,66 @@ class ChunkProcessor:
         futures = []
         fut_meta = {}
         
-        # Helper for transcription
         def transcribe_one(audio_bytes: io.BytesIO, abs_start: float, user_name: str, duration: float):
-            # Optimizations:
-            # 1. Reset pointer
             audio_bytes.seek(0)
-            # 2. Set name attribute for libraries that inspect it
             audio_bytes.name = "audio.wav"
 
             if job.stt_provider == "assembly":
-                # Pass BytesIO directly (Supported by updated integration)
                 return transcribe_file_assembly_sentences(audio_bytes, abs_start, user_name, duration)
             
             elif job.stt_provider == "chutes":
                 from bot_app.integrations.chutes_stt import transcribe_file_chutes_sync
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                    tmp.write(audio_bytes.read())
-                    tmp_path = tmp.name
-                
-                try:
-                    return transcribe_file_chutes_sync(tmp_path, abs_start, user_name, duration)
-                finally:
-                    if os.path.exists(tmp_path): os.remove(tmp_path)
+                return transcribe_file_chutes_sync(audio_bytes, abs_start, user_name, duration)
 
             elif job.stt_provider == "gemini":
-                # Gemini requires Async execution. We bridge it here.
-                # We need to save to file because our simple Gemini impl reads file path
+                # Bridge to sync version
+                from bot_app.integrations.gemini_stt import transcribe_file_gemini_sync
+                # Save temp only for Gemini as it might expect path (can be optimized later)
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp.write(audio_bytes.read())
                     tmp_path = tmp.name
-                
                 try:
-                    # Bridge to Async
-                    # We need the bot's loop. Usually available via discord.client, but we are in a thread.
-                    # We can try to get it from 'threading.main_thread' or pass it in.
-                    # Since we don't have easy access to the loop here without heavy refactoring,
-                    # we will use a new temporary loop for this thread? No, aiohttp needs shared session loop.
-                    
-                    # Hack: The 'ai_client' uses 'state.http_session'. 
-                    # We MUST run this coroutine on the SAME loop where http_session was created (Main Loop).
-                    
-                    # We can use a Future to wait for result from main loop.
-                    import asyncio
-                    from bot_app.integrations.gemini_stt import transcribe_file_gemini
-                    from bot_app.bot_entry import bot # Access bot global if possible, or pass it.
-                    # bot_app.bot_entry might cause circular import. 
-                    # Let's rely on 'state.tasks' or just 'asyncio.get_event_loop' if we are in main... no we are in thread.
-                    
-                    # Proper way: ChunkProcessor should have received 'loop' in init.
-                    # Let's assume we fix __init__ later. For now, let's look for a running loop.
-                    # Actually, we can just skip Gemini for now if we can't bridge it easily?
-                    # No, let's fix it.
-                    
-                    # We will use 'run_coroutine_threadsafe' with the main loop.
-                    # But we need reference to it.
-                    pass
-                except Exception:
-                    pass
-                
-                # RE-STRATEGY:
-                # Since bridging to main loop inside ThreadPoolExecutor inside a Thread is messy,
-                # let's use a BLOCKING call for Gemini if possible, OR
-                # pass the "transcribe_one" logic to an async function and await it?
-                # But ChunkProcessor is threaded.
-                
-                # Simpler approach:
-                # We can't easily reuse 'state.http_session' (async) from a synchronous thread without threadsafe calls.
-                # Let's use 'requests' (synchronous) for Gemini STT inside the worker thread. 
-                # It's less efficient but thread-safe.
-                
-                from bot_app.integrations.gemini_stt import transcribe_file_gemini_sync
-                res = transcribe_file_gemini_sync(tmp_path, abs_start, user_name, duration)
-                
-                if res is None: # Explicit None means "Failed/RateLimit", try Fallback
-                    logger.warning(f"Gemini failed for {user_name}, falling back to Azure.")
-                    try:
+                    res = transcribe_file_gemini_sync(tmp_path, abs_start, user_name, duration)
+                    if res is None:
                         return transcribe_file_azure_sentences(tmp_path, abs_start, user_name, duration)
-                    finally:
-                        if os.path.exists(tmp_path): os.remove(tmp_path)
-                
-                # Cleanup if success
-                if os.path.exists(tmp_path): os.remove(tmp_path)
-                return res
+                    return res
+                finally:
+                    if os.path.exists(tmp_path): os.remove(tmp_path)
                 
             else:
-                # Azure: Requires file path usually. We create temp file here ONLY if needed.
+                # Azure
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp.write(audio_bytes.read())
                     tmp_path = tmp.name
                 try:
                     return transcribe_file_azure_sentences(tmp_path, abs_start, user_name, duration)
                 finally:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+                    if os.path.exists(tmp_path): os.remove(tmp_path)
 
         with ThreadPoolExecutor(max_workers=max(1, TRANSCRIBE_WORKERS)) as pool:
             for user_id, packets in loaded_data.items():
                 user_name = job.user_map.get(user_id, f"User_{user_id}") if user_id != "Unknown" else "Unknown"
                 
-                # 3.1 VAD / Clustering
                 segments = get_speech_segments(packets, gap_threshold=1.5)
                 valid_segments = [s for s in segments if (s['end'] - s['start']) >= 0.5]
                 
                 if not valid_segments:
                     continue
                     
-                # 3.2 Batch Assembly
-                combined_audio = AudioSegment.silent(duration=0) 
+                combined_audio = AudioSegment.silent(duration=0, frame_rate=16000, channels=1) 
                 time_map = [] 
-                silence_pad = AudioSegment.silent(duration=1000)
+                silence_pad = AudioSegment.silent(duration=1000, frame_rate=16000, channels=1)
                 
                 for seg in valid_segments:
-                    seg_audio = reconstruct_user_audio(seg['packets'], seg['start'], seg['end'])
-                    seg_audio = seg_audio.set_frame_rate(16000).set_channels(1)
+                    # Request 16k Mono directly for STT
+                    raw_arr = reconstruct_user_audio(seg['packets'], seg['start'], seg['end'], sample_rate=16000, channels=1)
+                    
+                    seg_audio = AudioSegment(
+                        data=raw_arr.tobytes(),
+                        sample_width=2,
+                        frame_rate=16000,
+                        channels=1
+                    )
                     
                     start_ms = len(combined_audio)
                     combined_audio += seg_audio
@@ -344,12 +307,9 @@ class ChunkProcessor:
                     })
                     combined_audio += silence_pad
                 
-                # Export Combined to In-Memory Buffer
                 buf = io.BytesIO()
                 combined_audio.export(buf, format="wav")
-                # Buffer is ready for use
                 
-                # 3.3 Submit Batch
                 fut = pool.submit(transcribe_one, buf, 0.0, user_name, len(combined_audio)/1000.0)
                 futures.append(fut)
                 fut_meta[fut] = (user_id, user_name, time_map)
@@ -386,7 +346,7 @@ class ChunkProcessor:
                                 
                                 if callable(self.on_audio_phrase) and user_id != "Unknown":
                                     try: self.on_audio_phrase(int(user_id), user_name, phrase)
-                                    except: pass
+                                    except Exception as e: logger.warning(f"Error in on_audio_phrase callback: {e}")
                 except Exception as e:
                     logger.error(f"Transcribe batch error {user_name}: {e}")
                     continue
