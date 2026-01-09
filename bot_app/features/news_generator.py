@@ -182,8 +182,8 @@ async def generate_news_json(guild_id: int, guild_name: str, days: int = 1) -> d
         clean_resp = _extract_json_safe(raw_resp)
         
         if not clean_resp or not clean_resp.strip().startswith("{"):
-            logger.error(f"AI returned empty or invalid JSON: {raw_resp}")
-            return {"error": "AI вернул некорректный формат (не JSON)."}
+            logger.warning(f"AI Response Invalid (Skipping JSON parse): {raw_resp[:100]}...")
+            return {"error": "AI returned invalid format."}
             
         data = json.loads(clean_resp)
         

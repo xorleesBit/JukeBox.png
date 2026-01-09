@@ -107,11 +107,12 @@ class SoundpadSelect(discord.ui.Select):
         super().__init__(placeholder="Выберите звук...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         # Play sound logic
         # We need to find the VoiceLogger for this guild
         logger = self.bot.loggers.get(interaction.guild_id)
         if not logger or not logger.is_recording:
-             return await interaction.response.send_message("❌ Бот не в канале.", ephemeral=True)
+             return await interaction.followup.send("❌ Бот не в канале.", ephemeral=True)
              
         # Get path
         # Optimization: We could store path in value but it might be long.
@@ -136,11 +137,11 @@ class SoundpadSelect(discord.ui.Select):
         if found:
             success = await logger.play_sound(found['file_path'])
             if success:
-                await interaction.response.send_message(f"▶️ Играет: {found['name']}", ephemeral=True)
+                await interaction.followup.send(f"▶️ Играет: {found['name']}", ephemeral=True)
             else:
-                await interaction.response.send_message("❌ Ошибка воспроизведения (занят или не в войсе).", ephemeral=True)
+                await interaction.followup.send("❌ Ошибка воспроизведения (занят или не в войсе).", ephemeral=True)
         else:
-            await interaction.response.send_message("Звук не найден.", ephemeral=True)
+            await interaction.followup.send("Звук не найден.", ephemeral=True)
 
 class SoundpadSelectView(discord.ui.View):
     def __init__(self, bot, sounds):

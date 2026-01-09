@@ -18,7 +18,22 @@ from bot_app.audio.audio_utils import apply_effect
 
 logger = logging.getLogger(__name__)
 
-def safe_remove(path: str, tries: int = 5, delay: float = 0.5):
+def _apply_autotune_task(mp3_path, effect_to_apply):
+    try:
+        seg = AudioSegment.from_file(mp3_path)
+        seg = apply_effect(seg, effect_to_apply)
+        
+        # Create temp file
+        fd, temp_path = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+        
+        seg.export(temp_path, format="mp3")
+        return temp_path
+    except Exception as e:
+        logger.error(f"Failed to apply effect {effect_to_apply}: {e}")
+        return None
+
+async def safe_remove_async(path: str, tries: int = 5, delay: float = 0.5):
     if not path or not os.path.exists(path):
         return
     for _ in range(max(1, tries)):
@@ -27,10 +42,9 @@ def safe_remove(path: str, tries: int = 5, delay: float = 0.5):
             return
         except PermissionError:
             gc.collect()
-            time.sleep(delay)
+            await asyncio.sleep(delay)
         except Exception:
             return
-
 
 class PrankManager:
     def __init__(self, bot: discord.Client, db, settings, guild_id: int, voice_logger):
@@ -111,7 +125,7 @@ class PrankManager:
                             continue
                         
                         for path in deleted_paths:
-                            safe_remove(path)
+                            await safe_remove_async(path)
 
                 logger.info(f"Processing phrase for user {final_uid} (len={len(pcm_bytes)} bytes)")
 
@@ -135,7 +149,7 @@ class PrankManager:
                 if not ok:
                     logger.error(f"Failed to encode phrase {phrase_id}")
                     await self.db.delete_phrase(phrase_id)
-                    safe_remove(mp3_path)
+                    await safe_remove_async(mp3_path)
                     continue
 
                 await self.db.update_phrase_path(phrase_id, mp3_path)
@@ -287,20 +301,12 @@ class PrankManager:
                 logger.info(f"Auto-Tune triggered! Applying {effect_to_apply}")
 
         if effect_to_apply:
-            try:
-                seg = AudioSegment.from_file(mp3_path)
-                seg = apply_effect(seg, effect_to_apply)
-                
-                # Create temp file
-                fd, temp_path = tempfile.mkstemp(suffix=".mp3")
-                os.close(fd)
-                
-                seg.export(temp_path, format="mp3")
-                play_path = temp_path
-                temp_file = temp_path
-            except Exception as e:
-                logger.error(f"Failed to apply effect {effect_to_apply}: {e}")
-                play_path = mp3_path
+            # RUN HEAVY TASK IN THREAD
+            temp_file = await asyncio.to_thread(_apply_autotune_task, mp3_path, effect_to_apply)
+            if temp_file:
+                play_path = temp_file
+            else:
+                play_path = mp3_path # Fallback
 
         self.logger.is_prank_playing = True
         try:
@@ -316,7 +322,7 @@ class PrankManager:
         finally:
             self.logger.is_prank_playing = False
             if temp_file:
-                safe_remove(temp_file)
+                await safe_remove_async(temp_file)
 
         if record_play:
             await self.db.record_play(phrase_id)
