@@ -474,9 +474,26 @@ async def shutdown_handler(signal_type):
     # Force exit to kill daemon threads
     os._exit(0)
 
+async def debug_heartbeat():
+    """Prints a heartbeat to console to visualize loop freezes."""
+    while True:
+        await asyncio.sleep(5)
+        # Using print directly to bypass logging filters if needed, or use logger
+        # We use sys.stdout.write to be less spammy than a full log line
+        sys.stdout.write("💓\n")
+        sys.stdout.flush()
+
 async def main(token):
     # Setup Signal Handlers
     loop = asyncio.get_running_loop()
+    
+    # --- DEBUG MODE: DETECT BLOCKING ---
+    loop.set_debug(True)
+    loop.slow_callback_duration = 0.1 # Log anything taking > 100ms
+    print("🐞 Asyncio Debug Mode ENABLED (Threshold: 100ms)")
+    asyncio.create_task(debug_heartbeat())
+    # -----------------------------------
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown_handler(s)))

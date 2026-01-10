@@ -60,7 +60,8 @@ async def collect_metrics(bot) -> BotMetrics:
     try:
         process = psutil.Process()
         metrics.memory_mb = process.memory_info().rss / 1024 / 1024
-        metrics.cpu_percent = process.cpu_percent(interval=0.1)
+        # Non-blocking CPU check (returns usage since last call)
+        metrics.cpu_percent = process.cpu_percent(interval=None)
     except Exception as e:
         logger.debug(f"Could not get system stats: {e}")
     

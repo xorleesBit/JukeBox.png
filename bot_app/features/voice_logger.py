@@ -141,7 +141,14 @@ class VoiceLogger:
             # We ignore 'ts' (which is usually unix timestamp) for text formatting
             # and use current MSC time for the log line prefix
             now_msc = get_msc_now().timestamp()
-            self.log_store.append_event(now_msc, icon, text)
+            
+            try:
+                # Offload to thread if we are in the main loop
+                loop = asyncio.get_running_loop()
+                loop.run_in_executor(None, self.log_store.append_event, now_msc, icon, text)
+            except RuntimeError:
+                # We are already in a thread (e.g. Sink), write directly
+                self.log_store.append_event(now_msc, icon, text)
 
     def log_chat_message(self, user: str, text: str):
         if self.log_store and self.is_recording and not self.is_paused:
